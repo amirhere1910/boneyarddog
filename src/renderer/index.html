@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BoneYardDog</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body data-estado="inicio">
+  <header class="cabecera">
+    <img src="../../assets/logo.svg" alt="" width="64" height="64">
+    <div>
+      <h1>BoneYardDog</h1>
+      <p class="subtitulo">Encuentra lo que ocupa espacio y lleva tiempo sin usarse.</p>
+    </div>
+  </header>
+
+  <p class="aviso" role="note">Fase de desarrollo: esta pantalla solo analiza. No borra ni mueve nada.</p>
+
+  <section class="panel" aria-label="Elegir carpeta">
+    <div class="fila">
+      <button id="btn-elegir" type="button">Elegir carpeta…</button>
+      <button id="btn-cancelar" type="button" class="secundario" hidden>Cancelar</button>
+    </div>
+    <p id="carpeta-elegida" class="ruta" aria-live="polite"></p>
+  </section>
+
+  <section id="seccion-progreso" class="panel" aria-label="Progreso" hidden>
+    <div class="barra" role="progressbar" aria-label="Escaneando" aria-valuetext="Escaneando"><div class="barra-relleno"></div></div>
+    <p id="progreso-texto" aria-live="polite"></p>
+    <p id="progreso-ruta" class="ruta"></p>
+  </section>
+
+  <p id="mensaje" class="mensaje" role="status" aria-live="polite" hidden></p>
+
+  <section id="seccion-resultados" class="panel" aria-label="Resultados" hidden>
+    <h2>Resultado</h2>
+    <dl class="cifras">
+      <div><dt>Archivos</dt><dd id="res-archivos">–</dd></div>
+      <div><dt>Carpetas</dt><dd id="res-carpetas">–</dd></div>
+      <div><dt>Tamaño total</dt><dd id="res-tamano">–</dd></div>
+      <div><dt>Omitidos</dt><dd id="res-omitidos">–</dd></div>
+    </dl>
+    <p id="res-atime" class="nota"></p>
+
+    <h2>Los 10 archivos más grandes</h2>
+    <table>
+      <thead>
+        <tr><th scope="col">Nombre</th><th scope="col">Ubicación</th><th scope="col" class="num">Tamaño</th><th scope="col">Último uso</th></tr>
+      </thead>
+      <tbody id="tabla-top"></tbody>
+    </table>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>

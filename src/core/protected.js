@@ -10,11 +10,16 @@
  * duda, protegido.
  *   - Todo lo que está en: Windows, Program Files, Program Files (x86),
  *     ProgramData, $Recycle.Bin, System Volume Information, Recovery, Boot,
- *     $WinREAgent.
+ *     $WinREAgent, $Windows.~BT, $Windows.~WS, $GetCurrent, $SysReset,
+ *     Config.Msi, MSOCache, Documents and Settings.
  *   - Archivos del sistema: pagefile.sys, hiberfil.sys, swapfile.sys, bootmgr.
  *   - La raíz de la unidad (C:\) y la carpeta C:\Users.
  *   - La carpeta de cada usuario (C:\Users\<nombre>) pero SOLO ella: lo que
- *     hay dentro (Documents, Desktop, Downloads...) NO está protegido.
+ *     hay dentro (Documents, Desktop, Downloads...) NO está protegido, salvo:
+ *       · AppData y todo lo que contiene (se puede desactivar con la opción
+ *         `allowAppData`, pensada para un futuro "modo avanzado");
+ *       · NTUSER.DAT* y ntuser.ini (el perfil del usuario);
+ *       · .ssh, .gnupg y .aws con todo su contenido (claves y credenciales).
  *   - Nombres cortos 8.3 en la raíz (p. ej. PROGRA~1): no se pueden resolver
  *     sin consultar el disco, así que se asumen protegidos.
  *
@@ -37,10 +42,13 @@
  *     estuviera en la raíz de la unidad actual (así también funciona en pruebas
  *     con rutas de Linux, que no tienen nombres de sistema de Windows).
  *   - Esta lista es una red de seguridad, no un permiso: que algo no esté
- *     protegido no significa que sea seguro borrarlo (p. ej. AppData).
+ *     protegido no significa que sea seguro borrarlo.
  */
 
 const path = require('node:path');
+
+// Carpetas dentro de la carpeta de usuario que guardan claves o credenciales.
+const PROTECTED_IN_USER_HOME = new Set(['.ssh', '.gnupg', '.aws']);
 
 const PROTECTED_TOP_LEVEL = new Set([
   'windows',
@@ -53,6 +61,13 @@ const PROTECTED_TOP_LEVEL = new Set([
   'boot',
   'bootmgr',
   '$winreagent',
+  '$windows.~bt',
+  '$windows.~ws',
+  '$getcurrent',
+  '$sysreset',
+  'config.msi',
+  'msocache',
+  'documents and settings',
   'pagefile.sys',
   'hiberfil.sys',
   'swapfile.sys',
@@ -68,10 +83,12 @@ function stripExtendedPrefix(p) {
 
 /**
  * @param {string} inputPath
+ * @param {object} [options]
+ * @param {boolean} [options.allowAppData=false] Si es true, AppData deja de estar protegida.
  * @returns {boolean} true si la ruta (o algo que la contenga hacia arriba, ver
  *   reglas arriba) está protegida.
  */
-function isProtectedPath(inputPath) {
+function isProtectedPath(inputPath, { allowAppData = false } = {}) {
   if (typeof inputPath !== 'string' || inputPath.trim() === '' || inputPath.includes('\0')) {
     return true;
   }
@@ -99,7 +116,13 @@ function isProtectedPath(inputPath) {
   const [first] = parts;
   if (PROTECTED_TOP_LEVEL.has(first)) return true;
   if (SHORT_NAME_83.test(first)) return true;
-  if (first === 'users') return parts.length <= 2; // C:\Users y C:\Users\<nombre>
+  if (first === 'users') {
+    if (parts.length <= 2) return true; // C:\Users y C:\Users\<nombre>
+    const inHome = parts[2];
+    if (inHome === 'appdata') return !allowAppData;
+    if (PROTECTED_IN_USER_HOME.has(inHome)) return true;
+    if (parts.length === 3 && (inHome.startsWith('ntuser.dat') || inHome === 'ntuser.ini')) return true;
+  }
   return false;
 }
 

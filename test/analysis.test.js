@@ -47,6 +47,9 @@ function folder(p, children = [], { atime = 0, mtime = 0 } = {}) {
 }
 
 const NOW = Date.UTC(2025, 0, 1);
+// Las carpetas temporales reales pueden estar dentro de AppData (Windows), que está
+// protegida. Las pruebas con archivos reales inyectan "nada protegido".
+const NO_PROT = () => false;
 const daysAgo = (d) => NOW - d * DAY_MS;
 
 function allNodes(node, out = []) {
@@ -80,56 +83,63 @@ test('topLargestFiles: empates se ordenan por ruta (resultado estable)', () => {
 
 // --- topLargestFolders ------------------------------------------------------
 
-test('topLargestFolders: no mezcla padres con hijos y baja hasta donde se reparte el peso', () => {
+test('topLargestFolders: C:\\Users\\amir con Videos 40, Docs 35 y Fotos 25, n = 3 => las tres', () => {
+  const GB = 1e9;
+  const tree = folder('C:\\Users\\amir', [
+    folder('C:\\Users\\amir\\Videos', [file('C:\\Users\\amir\\Videos\\v.mp4', 40 * GB)]),
+    folder('C:\\Users\\amir\\Docs', [file('C:\\Users\\amir\\Docs\\d.pdf', 35 * GB)]),
+    folder('C:\\Users\\amir\\Fotos', [file('C:\\Users\\amir\\Fotos\\f.jpg', 25 * GB)]),
+  ]);
+  assert.deepEqual(
+    topLargestFolders(tree, 3).map((f) => f.name),
+    ['Videos', 'Docs', 'Fotos'],
+  );
+});
+
+test('topLargestFolders: abre la más pesada que tenga subcarpetas hasta llegar a n', () => {
   const tree = folder('/r', [
     folder('/r/Users', [
-      folder('/r/Users/amir', [
-        folder('/r/Users/amir/Videos', [
-          folder('/r/Users/amir/Videos/Vac', [file('/r/Users/amir/Videos/Vac/v.mp4', 290)]),
-          file('/r/Users/amir/Videos/x.mp4', 10),
-        ]),
-        folder('/r/Users/amir/Docs', [file('/r/Users/amir/Docs/d.pdf', 150)]),
-        file('/r/Users/amir/suelto.bin', 45),
-      ]),
+      folder('/r/Users/amir', [file('/r/Users/amir/a', 495)]),
       file('/r/Users/l.txt', 5),
     ]),
     folder('/r/Otro', [
       folder('/r/Otro/A', [file('/r/Otro/A/a', 50)]),
-      folder('/r/Otro/B', [file('/r/Otro/B/b', 50)]),
+      folder('/r/Otro/B', [file('/r/Otro/B/b', 40)]),
     ]),
   ]);
+  // Raíz: Users (500), Otro (90). Con n = 2 ya hay 2 entradas: no se abre nada.
+  assert.deepEqual(topLargestFolders(tree, 2).map((f) => f.path), ['/r/Users', '/r/Otro']);
+  // n = 3: faltan entradas, se abre Users (la más pesada con subcarpetas) => Otro, amir (2),
+  // todavía falta una, se abre Otro => amir, A, B.
+  assert.deepEqual(topLargestFolders(tree, 3).map((f) => f.path), ['/r/Users/amir', '/r/Otro/A', '/r/Otro/B']);
+  // n = 4: solo hay 3 disponibles, devuelve las 3.
+  assert.deepEqual(topLargestFolders(tree, 4).map((f) => f.path), ['/r/Users/amir', '/r/Otro/A', '/r/Otro/B']);
+});
 
-  const top = topLargestFolders(tree, 10);
-  assert.deepEqual(top.map((f) => f.path), ['/r/Users/amir', '/r/Otro']);
-  for (const a of top) {
-    for (const b of top) assert.ok(!isInside(a, b), `${b.path} no debe estar dentro de ${a.path}`);
+test('topLargestFolders: n mayor que lo disponible devuelve lo que haya', () => {
+  const tree = folder('/r', [folder('/r/A', [file('/r/A/f', 5)]), folder('/r/B', [file('/r/B/f', 9)])]);
+  assert.deepEqual(topLargestFolders(tree, 50).map((f) => f.path), ['/r/B', '/r/A']);
+});
+
+test('topLargestFolders: nunca devuelve padre e hijo a la vez', () => {
+  const tree = folder('/r', [
+    folder('/r/A', [folder('/r/A/B', [folder('/r/A/B/C', [file('/r/A/B/C/f', 90)]), file('/r/A/B/g', 5)]), file('/r/A/h', 5)]),
+    folder('/r/X', [folder('/r/X/Y', [file('/r/X/Y/f', 30)]), folder('/r/X/Z', [file('/r/X/Z/f', 20)])]),
+  ]);
+  for (let n = 1; n <= 8; n++) {
+    const top = topLargestFolders(tree, n);
+    assert.ok(top.length <= n);
+    for (const a of top) for (const b of top) assert.ok(!isInside(a, b), `n=${n}: ${b.path} dentro de ${a.path}`);
   }
-  assert.ok(!top.some((f) => f.path === '/r'), 'la raíz escaneada no cuenta');
-  assert.deepEqual(topLargestFolders(tree, 1).map((f) => f.path), ['/r/Users/amir']);
 });
 
-test('topLargestFolders: una cadena donde un hijo concentra el peso se muestra por el hijo', () => {
-  const tree = folder('/r', [
-    folder('/r/A', [
-      folder('/r/A/B', [folder('/r/A/B/C', [file('/r/A/B/C/f', 90)]), file('/r/A/B/g', 5)]),
-      file('/r/A/h', 5),
-    ]),
-  ]);
-  assert.deepEqual(topLargestFolders(tree, 3).map((f) => f.path), ['/r/A/B/C']);
-});
-
-test('topLargestFolders: la dominancia es configurable', () => {
-  const tree = folder('/r', [
-    folder('/r/A', [folder('/r/A/B', [file('/r/A/B/f', 80)]), file('/r/A/g', 20)]),
-  ]);
-  assert.deepEqual(topLargestFolders(tree, 3).map((f) => f.path), ['/r/A']);
-  assert.deepEqual(topLargestFolders(tree, 3, { dominance: 0.7 }).map((f) => f.path), ['/r/A/B']);
-});
-
-test('topLargestFolders: casos vacíos', () => {
+test('topLargestFolders: la raíz no cuenta y los casos vacíos devuelven []', () => {
+  const tree = folder('/r', [folder('/r/A', [file('/r/A/f', 5)])]);
+  assert.ok(!topLargestFolders(tree, 5).some((f) => f.path === '/r'));
   assert.deepEqual(topLargestFolders(folder('/r', []), 5), []);
+  assert.deepEqual(topLargestFolders(folder('/r', [file('/r/a', 1)]), 5), []);
   assert.deepEqual(topLargestFolders(null, 5), []);
-  assert.deepEqual(topLargestFolders(folder('/r', [file('/r/a', 1)]), 0), []);
+  assert.deepEqual(topLargestFolders(tree, 0), []);
 });
 
 // --- lastUsedDate -----------------------------------------------------------
@@ -199,7 +209,7 @@ async function sampleStaleTree(t) {
 
 test('findStale: carpeta abandonada sale como UNA entrada; la que tiene un archivo reciente se desglosa', async (t) => {
   const { root, tree } = await sampleStaleTree(t);
-  const { items, totalBytes } = findStale(tree, { olderThanDays: 365, minSizeBytes: 100, now: NOW });
+  const { items, totalBytes } = findStale(tree, { olderThanDays: 365, minSizeBytes: 100, now: NOW, isProtected: NO_PROT });
 
   // Orden: por tamaño, de mayor a menor.
   assert.deepEqual(
@@ -216,15 +226,15 @@ test('findStale: carpeta abandonada sale como UNA entrada; la que tiene un archi
 
 test('findStale: minSizeBytes descarta lo pequeño; sin mínimo aparece todo lo viejo', async (t) => {
   const { root, tree } = await sampleStaleTree(t);
-  const sinMinimo = findStale(tree, { olderThanDays: 365, now: NOW });
+  const sinMinimo = findStale(tree, { olderThanDays: 365, now: NOW, isProtected: NO_PROT });
   assert.ok(sinMinimo.items.some((i) => i.path === path.join(root, 'mixta', 'viejo_chico.bin')));
-  const conMinimo = findStale(tree, { olderThanDays: 365, minSizeBytes: 100, now: NOW });
+  const conMinimo = findStale(tree, { olderThanDays: 365, minSizeBytes: 100, now: NOW, isProtected: NO_PROT });
   assert.ok(!conMinimo.items.some((i) => i.path.endsWith('viejo_chico.bin')));
 });
 
 test('findStale: las entradas nunca se solapan (no hay padre e hijo a la vez)', async (t) => {
   const { tree } = await sampleStaleTree(t);
-  const { items } = findStale(tree, { olderThanDays: 30, now: NOW });
+  const { items } = findStale(tree, { olderThanDays: 30, now: NOW, isProtected: NO_PROT });
   for (const a of items) {
     for (const b of items) {
       if (a === b) continue;
@@ -238,7 +248,7 @@ test('findStale: si TODO está abandonado, la raíz sale como una sola entrada',
   put(root, 'x/a.bin', 10, { atimeDaysAgo: 900 });
   put(root, 'y.bin', 10, { atimeDaysAgo: 900 });
   const { tree } = await scan(root);
-  const { items } = findStale(tree, { olderThanDays: 365, now: NOW });
+  const { items } = findStale(tree, { olderThanDays: 365, now: NOW, isProtected: NO_PROT });
   assert.equal(items.length, 1);
   assert.equal(items[0].path, root);
 });
@@ -248,8 +258,8 @@ test('findStale: usa la fecha más reciente entre atime y mtime, y ignoreAtime l
   // Leído hace 2 días, pero modificado hace 3 años.
   put(root, 'leido.bin', 50, { atimeDaysAgo: 2, mtimeDaysAgo: 1100 });
   const { tree } = await scan(root);
-  assert.equal(findStale(tree, { olderThanDays: 365, now: NOW }).items.length, 0);
-  assert.equal(findStale(tree, { olderThanDays: 365, now: NOW, ignoreAtime: true }).items.length, 1);
+  assert.equal(findStale(tree, { olderThanDays: 365, now: NOW, isProtected: NO_PROT }).items.length, 0);
+  assert.equal(findStale(tree, { olderThanDays: 365, now: NOW, ignoreAtime: true, isProtected: NO_PROT }).items.length, 1);
 });
 
 test('findStale: el límite es "más de N días" (exactamente N no cuenta)', () => {
@@ -279,7 +289,7 @@ test('findStale: carpeta ilegible (incomplete) no se ofrece entera', () => {
 });
 
 test('findStale: árbol nulo y opciones inválidas', () => {
-  assert.deepEqual(findStale(null, { olderThanDays: 1 }), { items: [], protectedSkipped: [], totalBytes: 0 });
+  assert.deepEqual(findStale(null, { olderThanDays: 1 }), { items: [], notOffered: [], totalBytes: 0 });
   assert.throws(() => findStale(folder('/r', []), {}), RangeError);
   assert.throws(() => findStale(folder('/r', []), { olderThanDays: -1 }), RangeError);
 });
@@ -292,10 +302,10 @@ test('findStale: con un verificador de protección inyectado, excluye y avisa', 
     file('/r/libre', 50, old),
   ]);
   const isProtected = (p) => p === '/r/sistema' || p.startsWith('/r/sistema/') || p === '/r/mezcla/nucleo' || p.startsWith('/r/mezcla/nucleo/');
-  const { items, protectedSkipped } = findStale(tree, { olderThanDays: 365, now: NOW, isProtected });
+  const { items, notOffered } = findStale(tree, { olderThanDays: 365, now: NOW, isProtected });
 
   assert.deepEqual(items.map((i) => i.path).sort(), ['/r/libre', '/r/mezcla/ok']);
-  const reasons = Object.fromEntries(protectedSkipped.map((p) => [p.path, p.reason]));
+  const reasons = Object.fromEntries(notOffered.map((p) => [p.path, p.reason]));
   assert.equal(reasons['/r/sistema'], 'protegido');
   assert.equal(reasons['/r/mezcla'], 'contiene-protegidos');
   assert.equal(reasons['/r/mezcla/nucleo'], 'protegido');
@@ -462,23 +472,24 @@ test('findStale con protecciones reales: Windows y la carpeta de usuario no se o
     file('C:\\pagefile.sys', 9999, old),
   ]);
 
-  const { items, protectedSkipped } = findStale(tree, { olderThanDays: 365, now: NOW });
+  const { items, notOffered } = findStale(tree, { olderThanDays: 365, now: NOW });
   assert.deepEqual(
     items.map((i) => i.path),
     // Orden: por tamaño, de mayor a menor.
-    ['C:\\Users\\amir\\Documents', 'C:\\Temp', 'C:\\WindowsOld', 'C:\\Users\\amir\\NTUSER.DAT'],
+    ['C:\\Users\\amir\\Documents', 'C:\\Temp', 'C:\\WindowsOld'],
   );
   // Nada de lo ofrecido está protegido ni contiene algo protegido.
   const { isProtectedPath } = require('../src/core/protected');
   for (const i of items) {
     for (const n of allNodes(i.node)) assert.equal(isProtectedPath(n.path), false, n.path);
   }
-  const reasons = Object.fromEntries(protectedSkipped.map((p) => [p.path, p.reason]));
+  const reasons = Object.fromEntries(notOffered.map((p) => [p.path, p.reason]));
   assert.equal(reasons['C:\\'], 'protegido');
   assert.equal(reasons['C:\\Windows'], 'protegido');
   assert.equal(reasons['C:\\pagefile.sys'], 'protegido');
   assert.equal(reasons['C:\\Users'], 'protegido');
   assert.equal(reasons['C:\\Users\\amir'], 'protegido');
+  assert.equal(reasons['C:\\Users\\amir\\NTUSER.DAT'], 'protegido');
   assert.ok(!('C:\\Windows\\System32' in reasons), 'lo totalmente protegido no se desglosa');
 });
 
@@ -491,14 +502,14 @@ test('findStale con protecciones reales: una carpeta que contiene algo protegido
     ]),
     folder('D:\\Disco', [file('D:\\Disco\\a', 10, old), folder('D:\\Disco\\Program Files', [file('D:\\Disco\\Program Files\\b', 50, old)])]),
   ]);
-  const { items, protectedSkipped } = findStale(tree, { olderThanDays: 365, now: NOW });
+  const { items, notOffered } = findStale(tree, { olderThanDays: 365, now: NOW });
   // D:\Mezcla\Windows no está en la raíz de la unidad, así que no es protegida: sale la carpeta Mezcla entera.
   assert.ok(items.some((i) => i.path === 'D:\\Mezcla'));
   // D:\Disco contiene D:\Disco\Program Files (anidada, tampoco protegida): sale entera también.
   assert.ok(items.some((i) => i.path === 'D:\\Disco'));
   // La raíz D:\ está protegida, así que no sale como una sola entrada.
   assert.ok(!items.some((i) => i.path === 'D:\\'));
-  assert.equal(protectedSkipped[0].path, 'D:\\');
+  assert.equal(notOffered[0].path, 'D:\\');
 });
 
 test('findStale con protecciones reales: la raíz de un disco con carpeta de sistema real se desglosa', () => {
@@ -507,9 +518,9 @@ test('findStale con protecciones reales: la raíz de un disco con carpeta de sis
     folder('D:\\Windows', [file('D:\\Windows\\a.dll', 10, old)]),
     folder('D:\\Fotos', [file('D:\\Fotos\\a.jpg', 20, old)]),
   ]);
-  const { items, protectedSkipped } = findStale(tree, { olderThanDays: 365, now: NOW });
+  const { items, notOffered } = findStale(tree, { olderThanDays: 365, now: NOW });
   assert.deepEqual(items.map((i) => i.path), ['D:\\Fotos']);
-  assert.deepEqual(protectedSkipped.map((p) => [p.path, p.reason]).sort(), [
+  assert.deepEqual(notOffered.map((p) => [p.path, p.reason]).sort(), [
     ['D:\\', 'protegido'],
     ['D:\\Windows', 'protegido'],
   ]);
@@ -545,10 +556,96 @@ test('summarize con protecciones reales: carpeta que contiene algo protegido se 
   assert.equal(r.excluded[0].reason, 'protegido'); // D:\ es la raíz de la unidad
 });
 
-test('escaneo real + protecciones reales: las carpetas temporales de Linux/Windows no se marcan como protegidas', async (t) => {
-  const { root } = await sampleStaleTree(t);
+// --- Contenido no leído (1a) y carpetas sin datos (1b) ----------------------
+
+test('findStale: carpeta vieja con una subcarpeta ilegible NO se ofrece entera', () => {
+  const GB = 1e9;
+  const old = { atime: daysAgo(900), mtime: daysAgo(900) };
+  const locked = { ...folder('D:\\datos\\viejo\\locked', [], { mtime: daysAgo(900) }), incomplete: true };
+  const tree = folder('D:\\datos', [folder('D:\\datos\\viejo', [file('D:\\datos\\viejo\\a.bin', 1 * GB, old), locked]), file('D:\\datos\\nuevo.txt', 5, { atime: daysAgo(1), mtime: daysAgo(1) })]);
+
+  const { items, notOffered } = findStale(tree, { olderThanDays: 365, now: NOW });
+  assert.ok(!items.some((i) => i.path === 'D:\\datos\\viejo'), 'la carpeta con contenido no leído no sale entera');
+  assert.deepEqual(items.map((i) => i.path), ['D:\\datos\\viejo\\a.bin'], 'sus hijos legibles sí se revisan por separado');
+  const reasons = Object.fromEntries(notOffered.map((n) => [n.path, n.reason]));
+  assert.equal(reasons['D:\\datos\\viejo'], 'contiene-no-leidos');
+});
+
+test('findStale: una carpeta con partial (un hijo no se pudo leer) tampoco sale entera', () => {
+  const old = { atime: daysAgo(900), mtime: daysAgo(900) };
+  const parcial = { ...folder('D:\\p', [file('D:\\p\\a', 10, old)]), partial: true };
+  const tree = folder('D:\\', [parcial, file('D:\\nuevo', 1, { atime: daysAgo(1), mtime: daysAgo(1) })]);
+  const { items, notOffered } = findStale(tree, { olderThanDays: 365, now: NOW });
+  assert.deepEqual(items.map((i) => i.path), ['D:\\p\\a']);
+  assert.ok(notOffered.some((n) => n.path === 'D:\\p' && n.reason === 'contiene-no-leidos'));
+});
+
+test('summarize: carpeta con contenido no leído se excluye con motivo contiene-no-leidos', () => {
+  const locked = { ...folder('D:\\v\\locked', []), incomplete: true };
+  const viejo = folder('D:\\v', [file('D:\\v\\a', 100), locked]);
+  const r = summarize([viejo, file('D:\\z', 7)]);
+  assert.equal(r.totalBytes, 7);
+  assert.deepEqual(r.excluded.map((e) => [e.node.path, e.reason]), [['D:\\v', 'contiene-no-leidos']]);
+});
+
+test('escáner + análisis: una subcarpeta sin permisos hace "partial" al padre y frena la oferta', async (t) => {
+  const root = tmpDir(t);
+  put(root, 'viejo/a.bin', 100, { atimeDaysAgo: 900 });
+  put(root, 'viejo/locked/b.bin', 100, { atimeDaysAgo: 900 });
+  put(root, 'nuevo.txt', 5, { atimeDaysAgo: 1 });
+  const fsp = require('node:fs/promises');
+  const blocked = path.join(root, 'viejo', 'locked');
+  const original = fsp.readdir;
+  t.mock.method(fsp, 'readdir', async (p, ...rest) => {
+    if (p === blocked) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+    return original.call(fsp, p, ...rest);
+  });
   const { tree } = await scan(root);
-  const r = findStale(tree, { olderThanDays: 365, now: NOW });
-  assert.equal(r.protectedSkipped.length, 0);
-  assert.ok(r.items.length > 0);
+  const viejo = tree.children.find((c) => c.name === 'viejo');
+  const locked = viejo.children.find((c) => c.name === 'locked');
+  assert.equal(locked.incomplete, true);
+  const { items } = findStale(tree, { olderThanDays: 365, now: NOW, isProtected: NO_PROT });
+  assert.ok(!items.some((i) => i.path === viejo.path));
+});
+
+test('findStale/summarize: carpeta sin lista children no lanza error y se excluye (sin-datos)', () => {
+  const sinHijos = { name: 'x', path: 'D:\\x', type: 'folder', size: 500, atimeMs: 0, mtimeMs: 0, fileCount: 3 };
+  const padre = folder('D:\\', [sinHijos, file('D:\\viejo', 9, { atime: daysAgo(900), mtime: daysAgo(900) }), file('D:\\nuevo', 1, { atime: daysAgo(1), mtime: daysAgo(1) })]);
+
+  let r;
+  assert.doesNotThrow(() => (r = findStale(padre, { olderThanDays: 365, now: NOW })));
+  assert.deepEqual(r.items.map((i) => i.path), ['D:\\viejo']);
+  assert.ok(r.notOffered.some((n) => n.path === 'D:\\x' && n.reason === 'sin-datos'));
+
+  let s2;
+  assert.doesNotThrow(() => (s2 = summarize([sinHijos, padre.children[1]])));
+  assert.equal(s2.totalBytes, 9);
+  assert.deepEqual(s2.excluded.map((e) => [e.node.path, e.reason]), [['D:\\x', 'sin-datos']]);
+  assert.doesNotThrow(() => lastUsedDate(sinHijos));
+  assert.doesNotThrow(() => topLargestFolders(padre, 3));
+  assert.doesNotThrow(() => topLargestFiles(padre, 3));
+  assert.doesNotThrow(() => atimeReliability(padre));
+});
+
+test('escáner: un archivo que falla por EPERM deja al padre inmediato como partial; uno que desaparece no', async (t) => {
+  const root = tmpDir(t);
+  put(root, 'viejo/a.bin', 100, { atimeDaysAgo: 900 });
+  put(root, 'viejo/bloqueado.bin', 100, { atimeDaysAgo: 900 });
+  put(root, 'otro/b.bin', 100, { atimeDaysAgo: 900 });
+  put(root, 'otro/fantasma.bin', 100, { atimeDaysAgo: 900 });
+  const fsp = require('node:fs/promises');
+  const original = fsp.lstat;
+  t.mock.method(fsp, 'lstat', async (p, ...rest) => {
+    if (p === path.join(root, 'viejo', 'bloqueado.bin')) throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+    if (p === path.join(root, 'otro', 'fantasma.bin')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    return original.call(fsp, p, ...rest);
+  });
+  const { tree } = await scan(root);
+  const get = (n) => tree.children.find((c) => c.name === n);
+  assert.equal(get('viejo').partial, true);
+  assert.equal(get('otro').partial, undefined, 'desaparecer durante el escaneo no cuenta como no leído');
+  assert.equal(tree.partial, undefined, 'solo el padre inmediato');
+  const { items, notOffered } = findStale(tree, { olderThanDays: 365, now: NOW, isProtected: NO_PROT });
+  assert.ok(!items.some((i) => i.path === get('viejo').path));
+  assert.ok(notOffered.some((n) => n.path === get('viejo').path && n.reason === 'contiene-no-leidos'));
 });

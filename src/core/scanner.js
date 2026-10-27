@@ -13,8 +13,10 @@
  *     birthtimeMs,   // creación (0 si el sistema no la informa)
  *     fileCount,     // archivos contenidos (un archivo cuenta como 1)
  *     children,      // solo en carpetas
- *     incomplete     // solo en carpetas que no se pudieron leer
- *   }
+ *     incomplete,    // solo en carpetas cuya lista no se pudo leer
+ *     partial        // solo en carpetas con un hijo directo que no se pudo leer
+ *   }               // (permisos, tipo especial u otro error; no cuenta que
+ *                   // el hijo haya desaparecido ni que sea un enlace)
  *
  * Fechas como números (ms) y no como Date para que el árbol viaje sin
  * problemas entre procesos de Electron.
@@ -93,6 +95,7 @@ async function scan(rootPath, options = {}) {
   const root = path.resolve(rootPath);
   const limit = createLimiter(concurrency);
   const skipped = [];
+  const unreadable = new Set(); // rutas que fallaron de forma que deja al padre incompleto
   let filesSeen = 0;
   let foldersSeen = 0;
   let bytes = 0;
@@ -127,7 +130,9 @@ async function scan(rootPath, options = {}) {
       st = await io(() => fsp.lstat(p));
     } catch (err) {
       if (err === ABORTED) return null;
-      skip(p, classifyError(err));
+      const info = classifyError(err);
+      skip(p, info);
+      if (info.kind !== 'not-found') unreadable.add(p);
       return null;
     }
     currentPath = p;
@@ -158,6 +163,7 @@ async function scan(rootPath, options = {}) {
       };
     }
     skip(p, { kind: 'special', reason: 'Tipo especial (dispositivo, socket, tubería): se omite' });
+    unreadable.add(p);
     return null;
   }
 
@@ -190,6 +196,7 @@ async function scan(rootPath, options = {}) {
       node.size += child.size;
       node.fileCount += child.fileCount;
     }
+    if (names.some((n) => unreadable.has(path.join(p, n)))) node.partial = true;
     node.children.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     return node;
   }

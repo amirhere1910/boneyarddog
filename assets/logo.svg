@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Perro con un hueso">
+  <title>BoneYardDog</title>
+  <!-- Cabeza -->
+  <ellipse cx="64" cy="62" rx="30" ry="28" fill="#c58a4a"/>
+  <!-- Orejas caídas -->
+  <path d="M38 40 C22 38 16 62 22 82 C30 80 38 70 40 52 Z" fill="#8a5a2b"/>
+  <path d="M90 40 C106 38 112 62 106 82 C98 80 90 70 88 52 Z" fill="#8a5a2b"/>
+  <!-- Hocico -->
+  <ellipse cx="64" cy="74" rx="16" ry="12" fill="#ecd3b0"/>
+  <ellipse cx="64" cy="68" rx="6" ry="4.5" fill="#2b2118"/>
+  <!-- Ojos -->
+  <circle cx="52" cy="56" r="4" fill="#2b2118"/>
+  <circle cx="76" cy="56" r="4" fill="#2b2118"/>
+  <circle cx="53.2" cy="54.8" r="1.2" fill="#fff"/>
+  <circle cx="77.2" cy="54.8" r="1.2" fill="#fff"/>
+  <!-- Boca -->
+  <path d="M64 72 V78 M57 80 Q64 86 71 80" fill="none" stroke="#2b2118" stroke-width="2" stroke-linecap="round"/>
+  <!-- Hueso -->
+  <g fill="#f4efe6" stroke="#b9ad98" stroke-width="2" stroke-linejoin="round">
+    <rect x="34" y="96" width="60" height="9" rx="4.5"/>
+    <circle cx="33" cy="97" r="6.5"/>
+    <circle cx="33" cy="105" r="6.5"/>
+    <circle cx="95" cy="97" r="6.5"/>
+    <circle cx="95" cy="105" r="6.5"/>
+  </g>
+  <rect x="35" y="97" width="58" height="7" rx="3.5" fill="#f4efe6"/>
+</svg>

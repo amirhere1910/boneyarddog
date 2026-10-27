@@ -26,7 +26,7 @@ function isFile(node) {
 
 function* walk(node) {
   yield node;
-  if (node.children) {
+  if (Array.isArray(node.children)) {
     for (const child of node.children) yield* walk(child);
   }
 }
@@ -49,58 +49,35 @@ function topLargestFiles(tree, n) {
 }
 
 /**
- * Las n carpetas más pesadas, SIN solapamientos.
+ * Las n carpetas más pesadas, SIN solapamientos (nunca padre e hijo a la vez).
  *
- * Criterio (en lenguaje llano):
- *  1. La carpeta raíz escaneada no cuenta (siempre sería la primera y no
- *     aporta nada).
- *  2. Una carpeta se descarta si una sola subcarpeta suya concentra casi todo
- *     su peso (por defecto 90 %, opción `dominance`): en ese caso la
- *     información útil está en la subcarpeta, y se muestra esa.
- *  3. De las que quedan se elige de mayor a menor, y se omite cualquiera que
- *     sea padre o hijo de una ya elegida. Así el resultado nunca mezcla
- *     "Videos" con "Videos\Vacaciones".
- *
- * Límite: con este criterio un padre grande con varios hijos repartidos sale
- * como una sola entrada; sus hijos no aparecen aparte.
+ * Criterio: exploración progresiva.
+ *  1. Se parte de las subcarpetas directas de la raíz escaneada (la raíz misma
+ *     no cuenta: siempre sería la primera y no aporta nada).
+ *  2. Mientras haya menos de n entradas, se toma la MÁS PESADA que tenga
+ *     subcarpetas y se reemplaza por sus subcarpetas (los archivos sueltos que
+ *     tenía directamente dejan de aparecer).
+ *  3. Se para al llegar a n entradas o cuando ninguna se puede abrir más.
+ *  4. Se devuelven las n más pesadas, de mayor a menor (empates por ruta).
+ * Como cada paso cambia una carpeta por sus hijas, el resultado nunca mezcla
+ * padres con hijos. Si hay menos de n carpetas disponibles, devuelve las que
+ * haya. Límite: una carpeta abierta se muestra solo por sus subcarpetas, así
+ * que el peso de sus archivos sueltos no aparece en la lista.
  */
-function topLargestFolders(tree, n, { dominance = 0.9 } = {}) {
-  if (!tree || !(n > 0)) return [];
-  const candidates = [];
-  const parentOf = new Map();
-  (function collect(node, isRoot) {
-    if (isFile(node)) return;
-    const folders = node.children.filter((c) => !isFile(c));
-    if (!isRoot && node.size > 0) {
-      const heaviest = folders.reduce((m, c) => Math.max(m, c.size), 0);
-      if (heaviest / node.size < dominance) candidates.push(node);
+function topLargestFolders(tree, n) {
+  if (!tree || !(n > 0) || isFile(tree)) return [];
+  const subfolders = (node) => (node.children || []).filter((c) => !isFile(c));
+  let entries = subfolders(tree);
+  while (entries.length < n) {
+    let target = null;
+    for (const e of entries) {
+      if (subfolders(e).length === 0) continue;
+      if (target === null || bySizeThenPath(e, target) < 0) target = e;
     }
-    for (const c of folders) {
-      parentOf.set(c, node);
-      collect(c, false);
-    }
-  })(tree, true);
-
-  candidates.sort(bySizeThenPath);
-  const chosen = [];
-  const chosenSet = new Set();
-  const chosenAncestors = new Set(); // padres de las ya elegidas
-  for (const node of candidates) {
-    if (chosen.length >= n) break;
-    if (chosenAncestors.has(node)) continue; // es padre de una elegida
-    let insideChosen = false;
-    for (let p = parentOf.get(node); p; p = parentOf.get(p)) {
-      if (chosenSet.has(p)) {
-        insideChosen = true; // es hija de una elegida
-        break;
-      }
-    }
-    if (insideChosen) continue;
-    chosen.push(node);
-    chosenSet.add(node);
-    for (let p = parentOf.get(node); p; p = parentOf.get(p)) chosenAncestors.add(p);
+    if (target === null) break;
+    entries = entries.filter((e) => e !== target).concat(subfolders(target));
   }
-  return chosen;
+  return entries.sort(bySizeThenPath).slice(0, n);
 }
 
 // ---------------------------------------------------------------------------
@@ -117,10 +94,11 @@ function maxFinite(values) {
 
 /**
  * Fecha de "último uso" (ms) = la más reciente entre atime y mtime.
- *  - Carpeta: la más reciente de todo su contenido.
- *  - Carpeta vacía: solo su mtime. El atime propio de una carpeta se ignora a
- *    propósito: el simple hecho de escanearla (leer su lista) puede
- *    actualizarlo y daría falsos "usos recientes".
+ *  - Carpeta con contenido: se usa SOLO lo de adentro (la más reciente de
+ *    todo su contenido). Ni el atime ni el mtime de la propia carpeta cuentan:
+ *    escanearla (leer su lista) puede actualizar su atime y daría falsos
+ *    "usos recientes".
+ *  - Carpeta vacía: se usa su mtime (el atime propio se ignora por lo mismo).
  *  - `ignoreAtime: true` usa solo mtime (para cuando atime no es fiable).
  * Devuelve null si el nodo no trae fechas válidas.
  */
@@ -134,6 +112,9 @@ function lastUsedDate(node, { ignoreAtime = false } = {}) {
  *  - selfProtected: la ruta del nodo está protegida
  *  - subtreeProtected: el nodo o algo dentro de él está protegido
  *  - fullyProtected: el nodo y TODO lo que contiene está protegido
+ *  - subtreeIncomplete: el nodo o algo dentro tiene `incomplete` (no se pudo
+ *    leer su lista), `partial` (un hijo no se pudo leer) o no trae datos
+ *  - noData: carpeta sin la lista `children`
  */
 function computeInfo(node, isProtected, ignoreAtime, memo) {
   const cached = memo.get(node);
@@ -142,8 +123,13 @@ function computeInfo(node, isProtected, ignoreAtime, memo) {
   let lastUsed;
   let subtreeProtected = selfProtected;
   let fullyProtected = selfProtected;
+  // Carpeta sin lista de hijos (p. ej. copiada entre procesos): no hay datos.
+  const noData = !isFile(node) && !Array.isArray(node.children);
+  let subtreeIncomplete = noData || Boolean(node.incomplete) || Boolean(node.partial);
   if (isFile(node)) {
     lastUsed = maxFinite(ignoreAtime ? [node.mtimeMs] : [node.atimeMs, node.mtimeMs]);
+  } else if (noData) {
+    lastUsed = null;
   } else if (node.children.length === 0) {
     lastUsed = maxFinite([node.mtimeMs]);
   } else {
@@ -153,12 +139,26 @@ function computeInfo(node, isProtected, ignoreAtime, memo) {
       dates.push(info.lastUsed);
       if (info.subtreeProtected) subtreeProtected = true;
       if (!info.fullyProtected) fullyProtected = false;
+      if (info.subtreeIncomplete) subtreeIncomplete = true;
     }
     lastUsed = maxFinite(dates);
   }
-  const info = { lastUsed, selfProtected, subtreeProtected, fullyProtected };
+  const info = { lastUsed, selfProtected, subtreeProtected, fullyProtected, subtreeIncomplete, noData };
   memo.set(node, info);
   return info;
+}
+
+/**
+ * Guarda en cada nodo del árbol su fecha de último uso (`lastUsedMs`, ver
+ * lastUsedDate) con UNA sola pasada. MODIFICA el árbol que recibe; pensado
+ * para el árbol privado del servicio de análisis, que luego lista carpetas sin
+ * recalcular. Los nodos sin datos o sin fecha quedan con `lastUsedMs: null`.
+ */
+function annotateLastUsed(tree, { ignoreAtime = false } = {}) {
+  if (!tree) return;
+  const memo = new Map();
+  computeInfo(tree, () => false, ignoreAtime, memo);
+  for (const [node, info] of memo) node.lastUsedMs = info.lastUsed;
 }
 
 // ---------------------------------------------------------------------------
@@ -173,11 +173,15 @@ function computeInfo(node, isProtected, ignoreAtime, memo) {
  *   miles de archivos). Si tiene aunque sea un archivo reciente, la carpeta
  *   no está abandonada y se miran sus hijos por separado.
  * - Las entradas devueltas nunca se solapan entre sí.
- * - Protegidos: un nodo protegido, o una carpeta con algo protegido dentro,
- *   no se ofrece completo; va a `protectedSkipped` (reason: 'protegido' o
- *   'contiene-protegidos'). De esa carpeta se siguen revisando sus hijos por
- *   separado, salvo que todo su contenido esté protegido.
- * - Las carpetas que no se pudieron leer (`incomplete`) no se ofrecen enteras.
+ * - No se ofrecen (van a `notOffered`, con `reason`):
+ *     'protegido'            el nodo está protegido
+ *     'contiene-protegidos'  tiene algo protegido dentro
+ *     'contiene-no-leidos'   él o algo dentro no se pudo leer del todo
+ *                            (`incomplete` / `partial`): su tamaño y su fecha
+ *                            de uso no son confiables
+ *     'sin-datos'            carpeta sin lista `children`
+ *   De una carpeta no ofrecida se siguen revisando sus hijos por separado,
+ *   salvo que todo su contenido esté protegido o que no tenga datos.
  * - Con minSizeBytes = 0 también salen las carpetas vacías viejas.
  *
  * @param {object} tree
@@ -187,7 +191,7 @@ function computeInfo(node, isProtected, ignoreAtime, memo) {
  * @param {number} [opts.now=Date.now()] Inyectable para pruebas.
  * @param {boolean} [opts.ignoreAtime=false] Usar solo mtime.
  * @param {(p: string) => boolean} [opts.isProtected]
- * @returns {{items: Array, protectedSkipped: Array, totalBytes: number}}
+ * @returns {{items: Array, notOffered: Array, totalBytes: number}}
  */
 function findStale(tree, opts = {}) {
   const {
@@ -201,14 +205,18 @@ function findStale(tree, opts = {}) {
     throw new RangeError('olderThanDays debe ser un número mayor o igual a 0');
   }
   const items = [];
-  const protectedSkipped = [];
-  if (!tree) return { items, protectedSkipped, totalBytes: 0 };
+  const notOffered = [];
+  if (!tree) return { items, notOffered, totalBytes: 0 };
 
   const cutoff = now - olderThanDays * DAY_MS;
   const memo = new Map();
 
   function visit(node) {
     const info = computeInfo(node, isProtected, ignoreAtime, memo);
+    if (info.noData) {
+      if (!(node.size < minSizeBytes)) notOffered.push(skipEntry(node, 'sin-datos'));
+      return;
+    }
     const stale = info.lastUsed !== null && info.lastUsed < cutoff;
     if (!stale) {
       if (!isFile(node)) node.children.forEach(visit);
@@ -217,11 +225,13 @@ function findStale(tree, opts = {}) {
     if (node.size < minSizeBytes) return; // sus hijos son aún más chicos
 
     if (info.selfProtected) {
-      protectedSkipped.push(skipEntry(node, 'protegido'));
+      notOffered.push(skipEntry(node, 'protegido'));
       if (info.fullyProtected) return; // todo lo de adentro también: no se desglosa
     } else if (info.subtreeProtected) {
-      protectedSkipped.push(skipEntry(node, 'contiene-protegidos'));
-    } else if (!node.incomplete) {
+      notOffered.push(skipEntry(node, 'contiene-protegidos'));
+    } else if (info.subtreeIncomplete) {
+      notOffered.push(skipEntry(node, 'contiene-no-leidos'));
+    } else {
       items.push({
         node,
         path: node.path,
@@ -238,8 +248,8 @@ function findStale(tree, opts = {}) {
   visit(tree);
 
   items.sort(bySizeThenPath);
-  protectedSkipped.sort(bySizeThenPath);
-  return { items, protectedSkipped, totalBytes: items.reduce((s, i) => s + i.size, 0) };
+  notOffered.sort(bySizeThenPath);
+  return { items, notOffered, totalBytes: items.reduce((s, i) => s + i.size, 0) };
 }
 
 function skipEntry(node, reason) {
@@ -350,6 +360,8 @@ function* ancestorKeys({ body, prefix, sep, win }) {
  * Espacio total que se liberaría al seleccionar un conjunto de nodos.
  *
  * - Protegidos (o carpetas con algo protegido dentro): excluidos.
+ * - Carpetas con contenido no leído ('contiene-no-leidos') o sin lista de
+ *   hijos ('sin-datos'): excluidas, porque su tamaño no es confiable.
  * - Si se selecciona una carpeta y algo dentro de ella, solo cuenta la
  *   carpeta. El mismo nodo repetido cuenta una vez. Se compara por ruta, por
  *   lo que también funciona con copias del nodo (p. ej. tras pasar por IPC).
@@ -358,7 +370,7 @@ function* ancestorKeys({ body, prefix, sep, win }) {
  * @param {object} [opts]
  * @param {(p: string) => boolean} [opts.isProtected]
  * @returns {{totalBytes:number, totalFiles:number, counted:object[],
- *            excluded: Array<{node:object, reason:'protegido'|'contiene-protegidos'|'duplicado'|'dentro-de-otro-seleccionado'}>}}
+ *            excluded: Array<{node:object, reason:'protegido'|'contiene-protegidos'|'contiene-no-leidos'|'sin-datos'|'duplicado'|'dentro-de-otro-seleccionado'}>}}
  */
 function summarize(selection, { isProtected = defaultIsProtected } = {}) {
   const counted = [];
@@ -373,6 +385,10 @@ function summarize(selection, { isProtected = defaultIsProtected } = {}) {
       excluded.push({ node, reason: 'protegido' });
     } else if (info.subtreeProtected) {
       excluded.push({ node, reason: 'contiene-protegidos' });
+    } else if (info.noData) {
+      excluded.push({ node, reason: 'sin-datos' });
+    } else if (info.subtreeIncomplete) {
+      excluded.push({ node, reason: 'contiene-no-leidos' });
     } else {
       const k = pathKey(node.path);
       if (seen.has(k.key)) {
@@ -409,6 +425,7 @@ module.exports = {
   topLargestFiles,
   topLargestFolders,
   lastUsedDate,
+  annotateLastUsed,
   findStale,
   atimeReliability,
   summarize,
