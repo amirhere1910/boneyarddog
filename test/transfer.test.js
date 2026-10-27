@@ -8,6 +8,8 @@ const { fs, path, tmpDir, write, sha, snapshot, makeSource, spyFs, makeEngine, m
 const copyOpts = (src, dest, extra = {}) => ({ sources: [src], destinationRoot: dest, mode: 'copy', verify: 'full', ...extra });
 const moveOpts = (src, dest, disposal, extra = {}) => ({ sources: [src], destinationRoot: dest, mode: 'move', verify: 'full', disposal, ...extra });
 const codes = (list) => list.map((b) => b.code);
+/** Partes de una ruta sin la unidad ("D:" en Windows): así se arma la ruta dentro de la cuarentena. */
+const withoutDrive = (p) => p.slice(path.parse(p).root.length).split(path.sep).filter(Boolean);
 
 /** Escritor de destino que altera el primer byte del primer bloque que escribe. */
 function corruptingWrites({ only } = {}) {
@@ -147,7 +149,7 @@ test('ESTADO.json, MANIFIESTO.json y LEEME.txt: contenido correcto', async (t) =
   }
   assert.deepEqual(c.carpetasVacias.sort(), ['sub', 'sub/hondo', 'vacia']);
   assert.deepEqual(c.errores, []);
-  assert.equal(c.destino.startsWith('raiz/'), true, 'en Linux la "unidad" es raiz');
+  assert.equal(c.destino.startsWith(process.platform === 'win32' ? `${src[0].toUpperCase()}/` : 'raiz/'), true, 'la carpeta de la unidad: su letra en Windows, "raiz" en otros sistemas');
 
   const leeme = fs.readFileSync(path.join(r.batchFolder, 'LEEME.txt'), 'utf8');
   for (const frase of ['BONEYARDDOG', 'CÓMO RESTAURAR', 'CÓMO VERIFICAR', 'SHA-256', 'MANIFIESTO.json', 'ESTADO.json']) assert.ok(leeme.includes(frase), frase);
@@ -558,6 +560,10 @@ test('preflight: espacio libre menor que lo copiado más el margen => impediment
 });
 
 test('preflight: nombres que el destino no admite (reservados, caracteres, espacio/punto final, mayúsculas)', async (t) => {
+  if (process.platform === 'win32') {
+    t.skip('Windows no deja crear esos nombres de prueba (":" o nombres que solo difieren en mayúsculas); las reglas se prueban en transfer-rules.test.js');
+    return;
+  }
   const base = tmpDir(t);
   const src = path.join(base, 'origen', 'raros');
   write(path.join(src, 'CON.txt'), '1');
@@ -872,7 +878,7 @@ test('"cuarentena": rename real en el volumen de origen; contenido idéntico, or
   assert.deepEqual(trashed, [], 'no usa la Papelera');
   assert.equal(fs.existsSync(src), false, 'el original ya no está en su sitio');
   const qBatch = path.join(quarantine, 'BoneYardDog-Cuarentena', r.lote);
-  const moved = path.join(qBatch, ...src.split(path.sep).filter(Boolean));
+  const moved = path.join(qBatch, ...withoutDrive(src));
   assert.deepEqual(snapshot(moved), before, 'contenido idéntico en cuarentena');
   assert.deepEqual(snapshot(c.destino), before, 'y en la copia');
   const leeme = fs.readFileSync(path.join(qBatch, 'LEEME.txt'), 'utf8');
@@ -908,7 +914,7 @@ test('"cuarentena": no pisa nada que ya exista en la cuarentena (el original se 
   const before = snapshot(src);
   const { engine, quarantine } = makeEngine(base);
   const pf = await engine.preflight(moveOpts(src, dest, 'cuarentena'));
-  const qDest = path.join(quarantine, 'BoneYardDog-Cuarentena', '2026-10-27_1405', ...src.split(path.sep).filter(Boolean));
+  const qDest = path.join(quarantine, 'BoneYardDog-Cuarentena', '2026-10-27_1405', ...withoutDrive(src));
   write(path.join(qDest, 'previo.txt'), 'ya estaba');
   const r = await engine.run(pf.plan);
   assert.equal(r.carpetas[0].resultado, 'original-sin-tocar');

@@ -62,7 +62,9 @@ test('servicio: la Papelera se atiende desde el otro hilo (trash inyectada) y el
   const { svc, trashed } = newService(t);
   // En Linux el worker no conoce el tipo de disco: el veredicto es "desconocido", así que hay que aceptar el riesgo.
   const pf = await svc.preflight({ sources: [src], destinationRoot: dest, mode: 'move', verify: 'full', disposal: 'papelera' });
-  assert.ok(pf.blockers.some((b) => b.code === 'papelera-no-recomendada'), 'sin aceptar el riesgo se rechaza');
+  // Fuera de Windows el worker no puede saber el tipo de disco ("desconocido"): sin aceptar el riesgo se rechaza.
+  // En Windows sí lo sabe (NTFS fijo) y una carpeta pequeña "probablemente cabe".
+  if (process.platform !== 'win32') assert.ok(pf.blockers.some((b) => b.code === 'papelera-no-recomendada'), 'sin aceptar el riesgo se rechaza');
   const pf2 = await svc.preflight({ sources: [src], destinationRoot: dest, mode: 'move', verify: 'full', disposal: 'papelera', acceptRecycleRisk: true });
   assert.deepEqual(pf2.blockers, []);
   const r = await svc.run(pf2.planId);
@@ -103,7 +105,8 @@ test('servicio: una sola operación a la vez y cancelación a mitad (originales 
   const src = makeSource(base, { big: true });
   const dest = makeDest(base);
   const before = snapshot(src);
-  const { svc, trashed } = newService(t);
+  // Avisos de progreso sin límite de frecuencia: en una máquina rápida la copia podría terminar antes del primer aviso del archivo grande.
+  const { svc, trashed } = newService(t, { progressIntervalMs: 0 });
   const pf = await svc.preflight({ sources: [src], destinationRoot: dest, mode: 'move', verify: 'full', disposal: 'papelera', acceptRecycleRisk: true });
   const events = [];
   let cancelSent = false;

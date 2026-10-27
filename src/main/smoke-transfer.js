@@ -359,7 +359,7 @@ function finish(code, error) {
   fs.writeFileSync(path.join(outDir, 'transferencia.json'), JSON.stringify(report, null, 2));
   console.log(`[transferencia] ${code === 0 ? 'OK' : 'FALLÓ'}`);
   console.log(`[transferencia] volúmenes: ${report.volumes.map((v) => `${v.letra}:${v.fileSystem}/${v.driveType}`).join(' ') || '(no aplica)'}`);
-  for (const [k, v] of Object.entries(report.scenarios)) console.log(`[transferencia] ${k}: ${JSON.stringify(v).slice(0, 400)}`);
+  for (const [k, v] of Object.entries(report.scenarios)) console.log(`[transferencia] ${k}: ${JSON.stringify(v).slice(0, 3500)}`);
   for (const s of report.surprises) console.log(`[transferencia] SORPRESA: ${s}`);
   for (const v of report.violations) console.log(`[transferencia] VIOLACIÓN: ${v}`);
   if (report.error) console.log(`[transferencia] error: ${report.error}`);

@@ -22,11 +22,12 @@ class TransferService extends EventEmitter {
    * @param {object} [options]
    * @param {(p: string) => Promise<void>} [options.trash] Envía a la Papelera (inyectada).
    * @param {() => Worker} [options.workerFactory] Para pruebas.
+   * @param {number} [options.progressIntervalMs=200] Separación mínima entre avisos de progreso.
    */
-  constructor({ trash, workerFactory } = {}) {
+  constructor({ trash, workerFactory, progressIntervalMs = 200 } = {}) {
     super();
     this._trash = typeof trash === 'function' ? trash : null;
-    this._factory = workerFactory || (() => new Worker(WORKER_FILE, { workerData: { hasTrash: this._trash !== null } }));
+    this._factory = workerFactory || (() => new Worker(WORKER_FILE, { workerData: { hasTrash: this._trash !== null, progressIntervalMs } }));
     this._worker = null;
     this._nextId = 1;
     this._pending = new Map();

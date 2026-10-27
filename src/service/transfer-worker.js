@@ -19,6 +19,7 @@ const { createTransferEngine } = require('../core/transfer');
 const { volumeInfoForPath } = require('../main/volume-info');
 
 const hasTrash = Boolean(workerData && workerData.hasTrash);
+const progressIntervalMs = workerData && Number.isFinite(workerData.progressIntervalMs) && workerData.progressIntervalMs >= 0 ? workerData.progressIntervalMs : 200;
 const version = (() => {
   try {
     return require('../../package.json').version;
@@ -109,6 +110,7 @@ const handlers = {
     try {
       const result = await engine.run(plan, {
         signal: controller.signal,
+        progressIntervalMs,
         onProgress: (p) => parentPort.postMessage({ type: 'progress', ...p }),
       });
       const runId = crypto.randomBytes(8).toString('hex');

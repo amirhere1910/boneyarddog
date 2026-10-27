@@ -140,7 +140,9 @@ test('volumeInfoForPath: letra de Windows -> PowerShell; otras rutas -> statfs r
   assert.equal(w.fileSystem, 'exFAT');
   assert.match(seen[0], /-DriveLetter F /);
   const real = await volumeInfoForPath(__dirname);
-  assert.equal(real.fileSystem, 'desconocido');
+  // Fuera de Windows solo hay statfs (sin formato); en Windows la letra real se consulta por PowerShell.
+  if (process.platform === 'win32') assert.equal(typeof real.fileSystem, 'string');
+  else assert.equal(real.fileSystem, 'desconocido');
   assert.ok(real.freeBytes === null || real.freeBytes >= 0);
   assert.ok(real.sizeBytes === null || real.sizeBytes > 0);
 });
