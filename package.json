@@ -8,6 +8,11 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test"
-  }
+    "test": "node --test",
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "45.0.0"
+  },
+  "main": "src/main/main.js"
 }
