@@ -10,7 +10,8 @@
   "scripts": {
     "test": "node --test",
     "start": "electron .",
-    "smoke": "node scripts/smoke.js"
+    "smoke": "node scripts/smoke.js",
+    "smoke:transfer": "node scripts/smoke-transfer.js"
   },
   "devDependencies": {
     "electron": "45.0.0"

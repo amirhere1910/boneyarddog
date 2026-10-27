@@ -114,3 +114,17 @@ test('package.json: electron fijado a una versión exacta, solo como devDependen
   assert.deepEqual(Object.keys(pkg.devDependencies), ['electron']);
   assert.equal(pkg.scripts.test, 'node --test');
 });
+
+test('la prueba de transferencia real solo corre con BYD_SMOKE=1 y no usa child_process ni borra por su cuenta nada fuera de lo suyo', () => {
+  const src = read('src', 'main', 'smoke-transfer.js');
+  assert.match(src, /if \(process\.env\.BYD_SMOKE !== '1'\) \{[\s\S]*?process\.exit\(2\)/);
+  assert.doesNotMatch(src, /child_process/);
+  const launcher = read('scripts', 'smoke-transfer.js');
+  assert.match(launcher, /BYD_SMOKE: '1'/);
+  const pkg = JSON.parse(read('package.json'));
+  assert.equal(pkg.scripts['smoke:transfer'], 'node scripts/smoke-transfer.js');
+  // El motor no se carga desde la app normal todavía (Fase 3B): solo lo usa esta prueba y su servicio.
+  const main = read('src', 'main', 'main.js');
+  assert.doesNotMatch(main, /transfer/i);
+  assert.doesNotMatch(read('src', 'main', 'preload.js'), /transfer|trash/i);
+});

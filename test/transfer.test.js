@@ -744,7 +744,7 @@ test('enlaces simbólicos: se omiten, se listan y no se siguen; el original no s
   assert.equal(fs.existsSync(path.join(copy, 'enlace-a-archivo.txt')), false);
   assert.equal(fs.existsSync(path.join(copy, 'secreto.txt')), false, 'no se siguió el enlace');
   assert.equal(r.carpetas[0].resultado, 'original-sin-tocar');
-  assert.match(r.carpetas[0].motivo, /enlaces/);
+  assert.match(r.carpetas[0].motivo, /Contiene enlaces o elementos que no se copiaron/, 'lo decide la guarda explícita, no solo la nueva lectura del origen');
   assert.deepEqual(trashed, []);
   assert.ok(fs.lstatSync(path.join(src, 'enlace-a-carpeta')).isSymbolicLink(), 'el enlace original sigue ahí');
   const man = JSON.parse(fs.readFileSync(path.join(r.batchFolder, 'MANIFIESTO.json'), 'utf8'));
@@ -767,6 +767,7 @@ test('elementos ilegibles: se listan y el original no se retira (se perdería lo
   assert.equal(w.elementos[0].ruta, path.join(src, 'sub', 'hondo'));
   const r = await engine.run(pf.plan);
   assert.equal(r.carpetas[0].resultado, 'original-sin-tocar');
+  assert.match(r.carpetas[0].motivo, /Contiene enlaces o elementos que no se copiaron/);
   assert.deepEqual(trashed, []);
 });
 
