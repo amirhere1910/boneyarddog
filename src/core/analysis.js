@@ -148,6 +148,19 @@ function computeInfo(node, isProtected, ignoreAtime, memo) {
   return info;
 }
 
+/**
+ * Guarda en cada nodo del árbol su fecha de último uso (`lastUsedMs`, ver
+ * lastUsedDate) con UNA sola pasada. MODIFICA el árbol que recibe; pensado
+ * para el árbol privado del servicio de análisis, que luego lista carpetas sin
+ * recalcular. Los nodos sin datos o sin fecha quedan con `lastUsedMs: null`.
+ */
+function annotateLastUsed(tree, { ignoreAtime = false } = {}) {
+  if (!tree) return;
+  const memo = new Map();
+  computeInfo(tree, () => false, ignoreAtime, memo);
+  for (const [node, info] of memo) node.lastUsedMs = info.lastUsed;
+}
+
 // ---------------------------------------------------------------------------
 // Sin uso
 // ---------------------------------------------------------------------------
@@ -412,6 +425,7 @@ module.exports = {
   topLargestFiles,
   topLargestFolders,
   lastUsedDate,
+  annotateLastUsed,
   findStale,
   atimeReliability,
   summarize,
