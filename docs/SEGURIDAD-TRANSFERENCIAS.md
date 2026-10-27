@@ -101,6 +101,19 @@ Cada envío al repositorio ejecuta `npm run smoke:transfer` dentro de Electron, 
 
 **Lo que esta prueba NO provoca** (haría falta crear varios GB): una carpeta que exceda la cuota de la Papelera, ni discos extraíbles, FAT32, exFAT o una desconexión real. Eso está en [`PRUEBAS-MANUALES.md`](PRUEBAS-MANUALES.md).
 
+### Observado en la 3B, con la app entera en Windows real (27 de octubre de 2026)
+
+`npm run smoke` abre la app en `windows-latest`, abre el asistente con ratón y teclado reales (ventana mínima, 720×520) y comprueba **en disco** (con una comparación independiente del motor):
+
+- **Copiar** a otro volumen (`C:`, con el origen en `D:`): verificado, idéntico, original intacto; «Verificar de nuevo» y «Quitar la copia» funcionan.
+- **Transferir con la Papelera real** desde la pantalla: el original se retiró (Papelera de Windows) y la copia verificada es idéntica; «Quitar la copia» no se ofrece.
+- **Papelera fallida** (simulada, porque en el runner no falla): el original queda intacto; el botón de borrar no avanza sin marcar «Entiendo…»; con la marca, original ausente y copia idéntica.
+- **Origen sin Papelera** (simulado): aparece la pregunta con nada preseleccionado; borrar exige la confirmación en rojo; «dejar el original» copia y verifica.
+- **Verificar una copia anterior**: copia sana → «La copia está bien»; copia alterada a propósito (un byte, un archivo borrado, uno sobrante) → 3 problemas detectados.
+- Las **capturas** de cada paso (`asistente-*.png`) están en el artefacto `smoke-artifacts` de la ejecución.
+
+**Sorpresas:** (1) una marca interna del destino anterior seguía en la pantalla al abrir otra operación (corregido); (2) en la ventana mínima el cuadro de una carpeta transferida puede estar plegado en «Otras», así que la marca «ya transferida» no siempre se ve en el mapa (el registro interno sí). **No** se provocó en Windows una Papelera que realmente rechace por tamaño.
+
 ## Qué NO garantiza (límites honestos)
 
 1. **La caché de Windows.** La verificación vuelve a leer el archivo del destino, pero Windows puede responder desde su memoria caché y no desde el disco físico. Por eso existe **«Verificar un lote»** (`verifyBatch`): conviene usarlo **después de expulsar y volver a conectar el disco**, que es cuando la lectura sí viene del disco.
