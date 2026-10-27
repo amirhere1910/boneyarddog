@@ -17,6 +17,23 @@ Una carpeta está **sin uso** si **ningún archivo dentro** fue modificado, ni c
 - Fechas en 0 o inválidas no cuentan. Un archivo sin ninguna fecha válida deja el uso "desconocido", y lo desconocido nunca se ofrece como abandonado.
 - **Limitación:** si el usuario solo *lee* archivos (fotos, música, documentos de consulta) sin modificarlos, la app no puede saberlo. Por eso cada carpeta muestra su archivo más reciente y puede marcarse "Ignorar".
 
+## Copia y transferencia (Fase 3A)
+
+El motor (`src/core/transfer.js`) copia carpetas a otro disco (USB/pendrive, disco duro o SSD; destinos NTFS, exFAT o FAT32), **verifica** la copia y, solo si todo quedó verificado, retira el original: **Papelera** (con aviso si puede no caber) o **cuarentena** (`BoneYardDog-Cuarentena`, en el mismo disco, sin borrar). Corre en su propio hilo (`src/service/transfer-service.js`). **No tiene pantallas todavía** y la app normal no lo usa (Fase 3B). Garantías y límites, en lenguaje llano: [`SEGURIDAD-TRANSFERENCIAS.md`](SEGURIDAD-TRANSFERENCIAS.md). Guía para probar a mano con USB reales: [`PRUEBAS-MANUALES.md`](PRUEBAS-MANUALES.md).
+
+Decisiones de esta fase:
+
+- **El original nunca se elimina por la fuerza**: solo Papelera inyectada o `rename` a cuarentena, y solo tras verificación completa y tras comprobar que el origen no cambió. Una prueba revisa el código fuente y otras espían el sistema de archivos.
+- **Verificación completa por defecto** (huella SHA-256 archivo por archivo); la **rápida** (tamaño y fecha) existe pero se rotula siempre «no comprueba el contenido» y **no permite retirar el original**.
+- **Nunca sobrescribe**: los archivos se abren con «crear, no existir» y cada lote tiene carpeta propia (`BoneYardDog\<fecha>\<unidad>\<ruta original>`), con `ESTADO.json`, `MANIFIESTO.json` y `LEEME.txt`.
+- **Lo que no se copia impide retirar el original**: si una carpeta tiene enlaces, elementos ilegibles o especiales, se copia pero su original no se toca.
+- **Papelera**: se rechaza si el volumen es extraíble o si lo enviado supera el 5 % del disco de origen (estimación de la cuota por omisión de Windows), salvo aceptación explícita.
+- **La Papelera real vive en el proceso principal** (`shell.trashItem`): el motor la recibe inyectada y el hilo se la pide por mensajes.
+- **Una sola excepción a «sin `child_process`»**: `src/main/volume-info.js` (tipo y formato de la unidad por PowerShell, con `execFile`, sin shell, 8 s como máximo y salida validada). Los lanzadores de `scripts/` también lo usan, pero no forman parte de la aplicación.
+- **`BoneYardDog-Cuarentena` es una ruta protegida**: el detector nunca la ofrece.
+- **Pruebas de mutación** (`node scripts/mutaciones-transferencia.js`): se rompe el motor a propósito y se comprueba que alguna prueba falle.
+- **Pulido del mapa**: los cuadros diminutos (menos de 20 px de lado o 500 px²) se pliegan en «Otras» y nunca reciben foco; en la pestaña Mapa la ventana es una columna a pantalla completa; el tope de 500 carpetas seleccionadas avisa sin perder la selección; 40 celdas por defecto.
+
 ## El mapa (Fase 2C)
 
 Dos pestañas: **Mapa** (la que se abre al terminar de escanear) y **Lista de candidatas**. El período "Sin uso desde hace" es el mismo para las dos.
@@ -75,16 +92,17 @@ Todo el cálculo (celdas, detalles, selección) lo hace el servicio en su hilo; 
 | 1 | Núcleo de escaneo, reglas de análisis y protecciones (sin interfaz) | **Terminada** |
 | 2A | Correcciones, servicio de análisis en hilo aparte, esqueleto de Electron seguro y prueba automática en Windows | **Terminada** |
 | 2B | Detección de carpetas grandes sin uso, configuración, ignoradas, unidades y pantalla de lista | **Terminada** |
-| 2C | Mapa visual de cuadros por tamaño con color por actividad, pestañas, menú contextual, detalles y selección con espacio total | **En curso** (esta) |
-| 3 | Copiar/transferir a un disco externo o USB, **con verificación** y, solo después, enviar a la papelera. Ver notas más abajo. | Pendiente |
+| 2C | Mapa visual de cuadros por tamaño con color por actividad, pestañas, menú contextual, detalles y selección con espacio total | **Terminada** |
+| 3A | **Motor** de copia y transferencia (sin pantallas): revisión previa, copia con huella SHA-256, verificación, retirada del original (Papelera o cuarentena) y `verifyBatch`; más el pulido del mapa | **Terminada** (esta) |
+| 3B | Pantallas (revisión previa, progreso, resultado), activar «Copiar…» y «Transferir…» en el menú y la barra, y los canales IPC | Pendiente |
 | 4 | Instalador para Windows y publicación | Pendiente |
 
 Ideas futuras (sin fecha): escanear todas las unidades a la vez; un mapa con las subcarpetas anidadas dentro de cada cuadro.
 
 ## Estructura
 
-- `src/core/` — motor (escáner, análisis, protecciones). Sin dependencias.
-- `src/service/` — servicio de análisis (`AnalysisService`) y su hilo (`analysis-worker.js`).
+- `src/core/` — motor (escáner, análisis, protecciones, reglas y motor de transferencia). Sin dependencias.
+- `src/service/` — servicio de análisis (`AnalysisService`, `analysis-worker.js`) y de transferencias (`TransferService`, `transfer-worker.js`).
 - `src/main/` — proceso principal de Electron: ventana, IPC validado (`validate.js`), configuración (`settings.js`), unidades (`drives.js`), puente seguro (`preload.js`) y prueba automática (`smoke.js`).
 - `src/renderer/` — pantalla (HTML, CSS y JS propios, sin librerías).
 - `assets/` — logo.
