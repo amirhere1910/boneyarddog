@@ -576,8 +576,9 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
       }
       await clickId('dlg-cerrar');
       await sleep(200);
-      const gone = await js(`(() => { const c = document.querySelector('#mapa .celda[data-ruta=${q(wf.papelera)}]'); return c ? c.dataset.transferida || '0' : 'sin-cuadro'; })()`);
-      check('B transferir: si el original se retiró, su cuadro del mapa queda marcado «ya transferida»; si no, sigue normal', originalGone ? gone === '1' : gone === '0', gone);
+      const gone = await js(`(() => { const c = document.querySelector('#mapa .celda[data-ruta=${q(wf.papelera)}]'); return { cuadro: c ? c.dataset.transferida || '0' : 'sin-cuadro', marcadas: document.body.dataset.transferidas || '0' }; })()`);
+      // En una ventana pequeña el cuadro puede haberse plegado en «Otras»: entonces solo se comprueba el registro interno.
+      check('B transferir: si el original se retiró, queda registrado y su cuadro (si se ve) marcado «ya transferida»; si no, todo sigue normal', originalGone ? gone.marcadas === '1' && (gone.cuadro === '1' || gone.cuadro === 'sin-cuadro') : gone.marcadas === '0' && gone.cuadro !== '1', gone);
     }
 
     // ===== (C) La Papelera FALLA (simulado): el original queda; luego borrado definitivo con confirmación =====

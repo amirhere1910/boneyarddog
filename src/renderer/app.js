@@ -396,6 +396,7 @@
       state.transferred.add(p);
       state.selection.delete(p);
     }
+    document.body.dataset.transferidas = String(state.transferred.size);
     setActionNote(`Se retiró el original de ${plural(paths.length, 'carpeta', 'carpetas')}. Los tamaños del mapa y de la lista se actualizan al volver a escanear.`);
     refresh();
     lastRender = null;
