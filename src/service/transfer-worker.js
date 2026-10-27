@@ -19,6 +19,9 @@ const { createTransferEngine } = require('../core/transfer');
 const { volumeInfoForPath } = require('../main/volume-info');
 
 const hasTrash = Boolean(workerData && workerData.hasTrash);
+// Solo la prueba automática lo pasa: las carpetas cuyo nombre empieza así se tratan como si estuvieran en un disco extraíble
+// (sin Papelera), para poder recorrer en la interfaz el camino «probablemente no cabe en la Papelera».
+const smokeRemovablePrefix = workerData && typeof workerData.smokeRemovablePrefix === 'string' ? workerData.smokeRemovablePrefix : null;
 const progressIntervalMs = workerData && Number.isFinite(workerData.progressIntervalMs) && workerData.progressIntervalMs >= 0 ? workerData.progressIntervalMs : 200;
 const version = (() => {
   try {
@@ -38,7 +41,11 @@ function askMainToTrash(p) {
 }
 
 const engine = createTransferEngine({
-  volumeInfo: (p) => volumeInfoForPath(p),
+  volumeInfo: async (p) => {
+    const info = await volumeInfoForPath(p);
+    if (smokeRemovablePrefix && require('node:path').basename(String(p)).startsWith(smokeRemovablePrefix)) return { ...info, driveType: 'removable' };
+    return info;
+  },
   trash: hasTrash ? askMainToTrash : null,
   appVersion: version,
 });

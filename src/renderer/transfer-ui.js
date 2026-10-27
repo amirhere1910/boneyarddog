@@ -386,6 +386,7 @@
     const deletable = ui.review.plan.sources.filter((s) => !s.links && !s.unreadable && !s.special);
     const bytes = deletable.reduce((sum, s) => sum + s.bytes, 0);
     $('rev-borrar-texto').textContent = W.deleteConfirmationText(deletable.length, bytes);
+    $('rev-borrar-confirmar').scrollIntoView({ block: 'nearest' });
   }
 
   function onRecycleChoice(value) {

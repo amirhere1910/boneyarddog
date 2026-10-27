@@ -182,7 +182,11 @@ test('transferir: ejecutar solo recibe un planId validado; el borrado definitivo
 
 test('la Papelera real (shell.trashItem) está en un solo lugar del principal y se inyecta al servicio', () => {
   assert.equal((main.match(/shell\.trashItem\(/g) || []).length, 1);
-  assert.match(main, /new TransferService\(\{ trash: \(p\) => shell\.trashItem\(p\) \}\)/);
+  assert.match(main, /const trash = \(p\) => \(context\.smokeTrashFails \? Promise\.reject\(.*\) : shell\.trashItem\(p\)\);/);
+  assert.match(main, /: \{ trash \},\s*\);/, 'fuera de la prueba automática solo se inyecta la Papelera real');
+  assert.equal((main.match(/smokeTrashFails/g) || []).length, 2, 'el fallo simulado solo se declara y se usa en un lugar');
+  assert.equal((main.match(/smokeRemovablePrefix/g) || []).length, 1);
+  assert.match(main, /SMOKE\s*\?[^:]*\n?[\s\S]*?smokeRemovablePrefix/);
   assert.doesNotMatch(appJs, /trashItem|unlink|rmSync|\.rm\(/);
 });
 

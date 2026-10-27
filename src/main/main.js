@@ -56,6 +56,7 @@ const context = {
   closeConfirmed: false,
   // Solo la prueba automática los usa (en el uso normal siguen en null):
   smokeDestination: null,
+  smokeTrashFails: false,
   smokeBatchFolder: null,
   closeDialogHook: null,
 };
@@ -442,7 +443,13 @@ async function start() {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(V.CHANNELS.progress, progress);
   });
   // La Papelera real solo existe aquí (shell.trashItem); el hilo de transferencias se la pide a este proceso.
-  transferService = new TransferService({ trash: (p) => shell.trashItem(p) });
+  const trash = (p) => (context.smokeTrashFails ? Promise.reject(new Error('Simulado por la prueba: Windows rechazó enviar a la Papelera (E_ABORT)')) : shell.trashItem(p));
+  transferService = new TransferService(
+    SMOKE
+      ? // Solo en la prueba automática: carpetas «Removible …» se tratan como discos sin Papelera.
+        { trash, workerFactory: () => new Worker(path.join(__dirname, '..', 'service', 'transfer-worker.js'), { workerData: { hasTrash: true, progressIntervalMs: 100, smokeRemovablePrefix: 'Removible ' } }) }
+      : { trash },
+  );
   transferService.on('progress', (progress) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(V.CHANNELS.transferProgress, progress);
   });
