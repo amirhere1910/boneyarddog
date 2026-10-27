@@ -114,6 +114,14 @@ class TransferService extends EventEmitter {
     return this._call('quitarCopiado', runId);
   }
 
+  /**
+   * Borra definitivamente los originales de carpetas de un resultado ya terminado cuya Papelera falló.
+   * Vuelve a comprobar todo y rechaza índices que no correspondan. `confirm` debe ser exactamente `true`.
+   */
+  eliminarDefinitivamente(runId, indices, confirm) {
+    return this._call('eliminarDefinitivamente', runId, indices, confirm);
+  }
+
   async close() {
     const worker = this._worker;
     this._worker = null;

@@ -8,8 +8,6 @@ const { fs, path, tmpDir, write, sha, snapshot, makeSource, spyFs, makeEngine, m
 const copyOpts = (src, dest, extra = {}) => ({ sources: [src], destinationRoot: dest, mode: 'copy', verify: 'full', ...extra });
 const moveOpts = (src, dest, disposal, extra = {}) => ({ sources: [src], destinationRoot: dest, mode: 'move', verify: 'full', disposal, ...extra });
 const codes = (list) => list.map((b) => b.code);
-/** Partes de una ruta sin la unidad ("D:" en Windows): así se arma la ruta dentro de la cuarentena. */
-const withoutDrive = (p) => p.slice(path.parse(p).root.length).split(path.sep).filter(Boolean);
 
 /** Escritor de destino que altera el primer byte del primer bloque que escribe. */
 function corruptingWrites({ only } = {}) {
@@ -830,7 +828,7 @@ test('"papelera": si dice que terminó pero el original sigue ahí, se informa y
   assert.ok(fs.existsSync(src));
 });
 
-test('"papelera" se RECHAZA si puede no caber o si el origen no tiene Papelera, salvo acceptRecycleRisk', async (t) => {
+test('"papelera": si puede no caber o el origen no tiene Papelera, es un AVISO (papelera-no-cabe, con los bytes) y no un impedimento', async (t) => {
   const base = tmpDir(t);
   const src = makeSource(base);
   const dest = makeDest(base);
@@ -839,88 +837,447 @@ test('"papelera" se RECHAZA si puede no caber o si el origen no tiene Papelera, 
 
   // Puede no caber: lo que se envía es más del 5 % del disco de origen.
   const pequeno = makeEngine(base, { volumeInfo: async (p) => (p === dest ? dst : { driveType: 'fixed', fileSystem: 'NTFS', sizeBytes: bytesProbe * 10, freeBytes: 1 }) });
-  const rej = await pequeno.engine.preflight(moveOpts(src, dest, 'papelera'));
-  assert.ok(codes(rej.blockers).includes('papelera-no-recomendada'));
-  assert.equal(rej.blockers.find((b) => b.code === 'papelera-no-recomendada').veredicto, 'puede-no-caber');
-  assert.match(rej.blockers.find((b) => b.code === 'papelera-no-recomendada').message, /5 %/);
-  assert.equal(rej.plan, null);
-  const acc = await pequeno.engine.preflight(moveOpts(src, dest, 'papelera', { acceptRecycleRisk: true }));
-  assert.deepEqual(acc.blockers, []);
-  assert.ok(codes(acc.warnings).includes('papelera-riesgo-aceptado'));
+  const pf = await pequeno.engine.preflight(moveOpts(src, dest, 'papelera'));
+  assert.deepEqual(pf.blockers, [], 'no bloquea: la interfaz decide');
+  assert.ok(pf.plan);
+  const w = pf.warnings.find((x) => x.code === 'papelera-no-cabe');
+  assert.equal(w.veredicto, 'puede-no-caber');
+  assert.equal(w.bytes, bytesProbe);
+  assert.equal(w.carpetas, 1);
+  assert.match(w.message, /5 %/);
+  assert.equal(pf.plan.recycleVerdict, 'puede-no-caber');
+  // acceptRecycleRisk ya no existe: pasarlo no cambia nada.
+  const pf2 = await pequeno.engine.preflight(moveOpts(src, dest, 'papelera', { acceptRecycleRisk: true }));
+  assert.deepEqual(pf2.warnings.map((x) => x.code), pf.warnings.map((x) => x.code));
 
   // Origen extraíble: no tiene Papelera.
   const usb = makeEngine(base, { volumeInfo: async (p) => (p === dest ? dst : { driveType: 'removable', fileSystem: 'FAT32', sizeBytes: 64e9, freeBytes: 1 }) });
-  const rej2 = await usb.engine.preflight(moveOpts(src, dest, 'papelera'));
-  assert.equal(rej2.blockers.find((b) => b.code === 'papelera-no-recomendada').veredicto, 'sin-papelera');
-  assert.equal(rej2.disposal.papelera.verdict, 'sin-papelera');
+  const pf3 = await usb.engine.preflight(moveOpts(src, dest, 'papelera'));
+  assert.deepEqual(pf3.blockers, []);
+  assert.equal(pf3.warnings.find((x) => x.code === 'papelera-no-cabe').veredicto, 'sin-papelera');
 
-  // Sin datos del origen: tampoco se asume.
+  // Sin datos del origen: aviso aparte, sin afirmar nada.
   const unk = makeEngine(base, { volumeInfo: async (p) => (p === dest ? dst : { driveType: 'unknown', fileSystem: 'desconocido', sizeBytes: null, freeBytes: null }) });
-  const rej3 = await unk.engine.preflight(moveOpts(src, dest, 'papelera'));
-  assert.equal(rej3.blockers.find((b) => b.code === 'papelera-no-recomendada').veredicto, 'desconocido');
+  const pf4 = await unk.engine.preflight(moveOpts(src, dest, 'papelera'));
+  assert.deepEqual(pf4.blockers, []);
+  assert.ok(codes(pf4.warnings).includes('papelera-desconocida'));
+  assert.ok(!codes(pf4.warnings).includes('papelera-no-cabe'));
 
-  // Sin función de Papelera inyectada.
+  // Un tamaño pequeño no avisa.
+  assert.ok(!codes((await makeEngine(base).engine.preflight(moveOpts(src, dest, 'papelera'))).warnings).includes('papelera-no-cabe'));
+
+  // Sin función de Papelera inyectada, sí es un impedimento.
   const noTrash = makeEngine(base, { trash: null });
   assert.ok(codes((await noTrash.engine.preflight(moveOpts(src, dest, 'papelera'))).blockers).includes('sin-funcion-papelera'));
 });
 
-test('"cuarentena": rename real en el volumen de origen; contenido idéntico, original ausente y LEEME explicativo', async (t) => {
+test('la disposición "cuarentena" ya no existe: es un impedimento', async (t) => {
   const base = tmpDir(t);
   const src = makeSource(base);
   const dest = makeDest(base);
-  const before = snapshot(src);
-  const { engine, quarantine, trashed } = makeEngine(base);
+  const { engine } = makeEngine(base);
   const pf = await engine.preflight(moveOpts(src, dest, 'cuarentena'));
-  assert.deepEqual(pf.blockers, []);
-  const r = await engine.run(pf.plan);
-  const c = r.carpetas[0];
-  assert.equal(c.resultado, 'original-en-cuarentena');
-  assert.deepEqual(trashed, [], 'no usa la Papelera');
-  assert.equal(fs.existsSync(src), false, 'el original ya no está en su sitio');
-  const qBatch = path.join(quarantine, 'BoneYardDog-Cuarentena', r.lote);
-  const moved = path.join(qBatch, ...withoutDrive(src));
-  assert.deepEqual(snapshot(moved), before, 'contenido idéntico en cuarentena');
-  assert.deepEqual(snapshot(c.destino), before, 'y en la copia');
-  const leeme = fs.readFileSync(path.join(qBatch, 'LEEME.txt'), 'utf8');
-  assert.match(leeme, /CUARENTENA/);
-  assert.match(leeme, /Explorador de Windows/);
-  const man = JSON.parse(fs.readFileSync(path.join(r.batchFolder, 'MANIFIESTO.json'), 'utf8'));
-  assert.equal(man.carpetas[0].original.accion, 'cuarentena');
-  assert.equal(man.carpetas[0].original.destino, moved);
+  assert.ok(codes(pf.blockers).includes('disposicion-invalida'));
+  assert.equal(pf.plan, null);
+  assert.deepEqual(fs.readdirSync(dest), []);
 });
 
-test('"cuarentena": si el rename falla (otro volumen, bloqueada), el original sigue intacto', async (t) => {
+// ============================================================ borrado definitivo del original
+
+const delOpts = (src, dest, extra = {}) => moveOpts(src, dest, 'borrar', { confirmPermanentDelete: true, ...extra });
+
+/** Busca un archivo por nombre dentro de un árbol (para alterar la copia desde un gancho de prueba). */
+function findFile(root, name) {
+  let found = null;
+  (function walkDir(dir) {
+    for (const n of fs.readdirSync(dir)) {
+      const full = path.join(dir, n);
+      if (fs.lstatSync(full).isDirectory()) walkDir(full);
+      else if (n === name) found = full;
+    }
+  })(root);
+  return found;
+}
+
+test('borrado definitivo, caso feliz: original ausente, copia idéntica, sin pasar por la Papelera y registrado', async (t) => {
   const base = tmpDir(t);
   const src = makeSource(base);
   const dest = makeDest(base);
   const before = snapshot(src);
-  const { fs: sfs } = spyFs({
-    before: (name) => {
-      if (name === 'rename') throw Object.assign(new Error('EXDEV: cross-device link not permitted'), { code: 'EXDEV' });
+  const { engine, trashed } = makeEngine(base);
+  const pf = await engine.preflight(delOpts(src, dest));
+  assert.deepEqual(pf.blockers, []);
+  assert.equal(pf.plan.disposal, 'borrar');
+  assert.equal(pf.plan.confirmPermanentDelete, true);
+  const r = await engine.run(pf.plan);
+  const c = r.carpetas[0];
+  assert.equal(c.resultado, 'original-borrado-definitivamente');
+  assert.equal(fs.existsSync(src), false);
+  assert.deepEqual(snapshot(c.destino), before, 'la copia tiene todo, idéntico');
+  assert.deepEqual(trashed, [], 'no pasó por la Papelera');
+  assert.equal(r.estado, 'completo');
+  const man = JSON.parse(fs.readFileSync(path.join(r.batchFolder, 'MANIFIESTO.json'), 'utf8'));
+  assert.deepEqual(man.carpetas[0].original, { accion: 'borrado-definitivo', motivo: null });
+  assert.equal(man.carpetas[0].resultado, 'original-borrado-definitivamente');
+});
+
+test('borrado definitivo: sin confirmPermanentDelete el preflight lo bloquea, y un plan sin la confirmación no borra', async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const dest = makeDest(base);
+  const before = snapshot(src);
+  const { engine } = makeEngine(base);
+  for (const falsa of [undefined, false, 'true', 1, 'sí']) {
+    const pf = await engine.preflight(moveOpts(src, dest, 'borrar', { confirmPermanentDelete: falsa }));
+    assert.ok(codes(pf.blockers).includes('borrado-sin-confirmar'), String(falsa));
+    assert.equal(pf.plan, null);
+  }
+  assert.deepEqual(fs.readdirSync(dest), [], 'no se escribió nada');
+  // Aunque alguien fabrique el plan a mano, el motor mismo lo comprueba.
+  const pf = await engine.preflight(delOpts(src, dest));
+  for (const falsa of [false, undefined, 'true', 1, null]) {
+    const plan = JSON.parse(JSON.stringify(pf.plan));
+    plan.confirmPermanentDelete = falsa;
+    const r = await engine.run(plan);
+    assert.equal(r.carpetas[0].resultado, 'original-sin-tocar', String(falsa));
+    assert.equal(r.carpetas[0].motivoCodigo, 'sin-confirmacion');
+    assert.deepEqual(snapshot(src), before);
+  }
+  // En modo copiar, confirmPermanentDelete no activa nada.
+  const cp = await engine.preflight(copyOpts(src, dest, { disposal: 'borrar', confirmPermanentDelete: true }));
+  assert.equal(cp.plan.disposal, 'ninguna');
+  assert.equal(cp.plan.confirmPermanentDelete, false);
+});
+
+test('borrado definitivo: si el ORIGEN cambió después de verificar, no se borra', async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const dest = makeDest(base);
+  const { engine } = makeEngine(base);
+  const pf = await engine.preflight(delOpts(src, dest));
+  const r = await engine.run(pf.plan, { hooks: { afterVerify: async () => write(path.join(src, 'nuevo-importante.txt'), 'llegó después') } });
+  assert.equal(r.carpetas[0].resultado, 'original-sin-tocar');
+  assert.equal(r.carpetas[0].motivoCodigo, 'origen-cambio');
+  assert.equal(fs.readFileSync(path.join(src, 'nuevo-importante.txt'), 'utf8'), 'llegó después');
+  assert.ok(fs.existsSync(path.join(src, 'a.txt')));
+});
+
+for (const [nombre, alterar] of [
+  ['un archivo desapareció', (f) => fs.unlinkSync(f)],
+  ['un archivo cambió de tamaño', (f) => fs.appendFileSync(f, 'extra')],
+  ['un archivo cambió de fecha', (f) => fs.utimesSync(f, new Date(2001, 1, 1), new Date(2001, 1, 1))],
+  ['un archivo pasó a ser una carpeta', (f) => { fs.unlinkSync(f); fs.mkdirSync(f); }],
+]) {
+  test(`borrado definitivo: si la COPIA perdió integridad (${nombre}), no se borra el original`, async (t) => {
+    const base = tmpDir(t);
+    const src = makeSource(base);
+    const dest = makeDest(base);
+    const before = snapshot(src);
+    const { engine } = makeEngine(base);
+    const pf = await engine.preflight(delOpts(src, dest));
+    const r = await engine.run(pf.plan, { hooks: { afterVerify: async () => alterar(findFile(dest, 'a.txt')) } });
+    assert.equal(r.carpetas[0].resultado, 'original-sin-tocar');
+    assert.equal(r.carpetas[0].motivoCodigo, 'copia-incompleta');
+    assert.match(r.carpetas[0].motivo, /copia/);
+    assert.deepEqual(snapshot(src), before, 'el original sigue entero');
+  });
+}
+
+test('borrado definitivo: si la carpeta de la copia pasó a ser un enlace hacia el ORIGEN, no se borra (la "copia" sería el propio original)', async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const dest = makeDest(base);
+  const before = snapshot(src);
+  const { engine } = makeEngine(base);
+  const pf = await engine.preflight(delOpts(src, dest));
+  let ok = true;
+  const r = await engine.run(pf.plan, {
+    hooks: {
+      afterVerify: async () => {
+        const copia = path.dirname(findFile(dest, 'a.txt'));
+        fs.renameSync(copia, `${copia}-movida`);
+        try {
+          fs.symlinkSync(src, copia, 'dir');
+        } catch {
+          ok = false;
+          fs.renameSync(`${copia}-movida`, copia);
+        }
+      },
+    },
+  });
+  if (!ok) {
+    t.skip('No se pueden crear enlaces simbólicos aquí');
+    return;
+  }
+  assert.equal(r.carpetas[0].resultado, 'original-sin-tocar');
+  assert.equal(r.carpetas[0].motivoCodigo, 'copia-incompleta');
+  assert.deepEqual(snapshot(src), before);
+});
+
+test('borrado definitivo: con enlaces en la carpeta no se borra (se copia, pero el original se queda)', async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const externo = path.join(base, 'externo');
+  write(path.join(externo, 'secreto.txt'), 'ajeno');
+  try {
+    fs.symlinkSync(externo, path.join(src, 'enlace-a-carpeta'), 'dir');
+  } catch (err) {
+    t.skip(`No se pueden crear enlaces simbólicos aquí (${err.code})`);
+    return;
+  }
+  const dest = makeDest(base);
+  const { engine } = makeEngine(base);
+  const pf = await engine.preflight(delOpts(src, dest));
+  assert.deepEqual(pf.blockers, []);
+  const r = await engine.run(pf.plan);
+  assert.equal(r.carpetas[0].resultado, 'original-sin-tocar');
+  assert.equal(r.carpetas[0].motivoCodigo, 'con-enlaces');
+  assert.ok(fs.existsSync(path.join(src, 'a.txt')));
+  assert.ok(fs.existsSync(path.join(externo, 'secreto.txt')), 'lo ajeno no se tocó');
+});
+
+test('borrado definitivo: una carpeta que pasó a estar protegida no se borra', async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const dest = makeDest(base);
+  let protectedNow = false;
+  const { engine } = makeEngine(base, { isProtected: (p) => protectedNow && p === src });
+  const pf = await engine.preflight(delOpts(src, dest));
+  protectedNow = true;
+  const r = await engine.run(pf.plan);
+  assert.equal(r.carpetas[0].resultado, 'original-sin-tocar');
+  assert.equal(r.carpetas[0].motivoCodigo, 'protegida');
+  assert.ok(fs.existsSync(path.join(src, 'a.txt')));
+});
+
+test('borrado definitivo: si el origen se desvía por un enlace justo antes de borrar, no se borra nada', async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const dest = makeDest(base);
+  const respaldo = `${src}-respaldo`;
+  const { engine } = makeEngine(base);
+  const pf = await engine.preflight(delOpts(src, dest));
+  let ok = true;
+  const r = await engine.run(pf.plan, {
+    hooks: {
+      afterVerify: async () => {
+        fs.renameSync(src, respaldo);
+        try {
+          fs.symlinkSync(respaldo, src, 'dir');
+        } catch {
+          ok = false;
+          fs.renameSync(respaldo, src);
+        }
+      },
+    },
+  });
+  if (!ok) {
+    t.skip('No se pueden crear enlaces simbólicos aquí');
+    return;
+  }
+  assert.equal(r.carpetas[0].resultado, 'original-sin-tocar');
+  assert.equal(r.carpetas[0].motivoCodigo, 'origen-cambio');
+  assert.ok(fs.existsSync(path.join(respaldo, 'a.txt')));
+});
+
+test('borrado definitivo: la copia con verificación rápida no basta (hace falta la completa)', async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const dest = makeDest(base);
+  const { engine } = makeEngine(base);
+  const rapida = await engine.preflight(delOpts(src, dest, { verify: 'quick' }));
+  assert.ok(codes(rapida.blockers).includes('mover-requiere-verificacion-completa'));
+  // Un plan fabricado a mano con verificación rápida: el motor se niega a ejecutarlo.
+  const pf = await engine.preflight(delOpts(src, dest));
+  await assert.rejects(engine.run({ ...pf.plan, verify: 'quick' }), /verificación completa/);
+  assert.ok(fs.existsSync(path.join(src, 'a.txt')));
+});
+
+test('borrado definitivo PARCIAL (fallo a mitad): informa exactamente qué se borró y qué no, y no reintenta', async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const dest = makeDest(base);
+  const { fs: sfs, calls } = spyFs({
+    before: (name, args) => {
+      if (name === 'rm') {
+        fs.rmSync(path.join(args[0], 'sub'), { recursive: true }); // se alcanza a borrar esto…
+        throw Object.assign(new Error('EBUSY: recurso ocupado'), { code: 'EBUSY' }); // …y entonces falla
+      }
     },
   });
   const { engine } = makeEngine(base, { fs: sfs });
-  const pf = await engine.preflight(moveOpts(src, dest, 'cuarentena'));
+  const pf = await engine.preflight(delOpts(src, dest));
+  const planned = pf.plan.sources[0].entries.map((e) => e.rel).sort();
   const r = await engine.run(pf.plan);
-  assert.equal(r.carpetas[0].resultado, 'original-sin-tocar');
-  assert.match(r.carpetas[0].motivo, /EXDEV/);
-  assert.deepEqual(snapshot(src), before);
+  const c = r.carpetas[0];
+  assert.equal(c.resultado, 'borrado-parcial');
+  assert.equal(calls.filter((x) => x.name === 'rm').length, 1, 'no reintenta');
+  assert.deepEqual([...c.borradoParcial.borrados].sort(), ['sub', 'sub/hondo', 'sub/hondo/x.bin', 'sub/y.txt']);
+  assert.deepEqual([...c.borradoParcial.restantes].sort(), ['a.txt', 'canción.txt', 'cero.bin', 'vacia']);
+  assert.deepEqual([...c.borradoParcial.borrados, ...c.borradoParcial.restantes].sort(), planned, 'cada elemento está en una lista u otra');
+  assert.match(c.borradoParcial.error, /EBUSY/);
+  assert.match(c.motivo, /No se reintentó/);
+  // Lo que quedó está realmente ahí, y la copia está completa.
+  assert.ok(fs.existsSync(path.join(src, 'a.txt')));
+  assert.equal(fs.existsSync(path.join(src, 'sub')), false);
+  assert.equal(snapshot(c.destino)['sub/hondo/x.bin'].type, 'file');
+  assert.equal(r.estado, 'con-errores');
+  const man = JSON.parse(fs.readFileSync(path.join(r.batchFolder, 'MANIFIESTO.json'), 'utf8'));
+  assert.equal(man.carpetas[0].original.accion, 'borrado-parcial');
+  assert.deepEqual(man.carpetas[0].original.restantes.sort(), ['a.txt', 'canción.txt', 'cero.bin', 'vacia']);
+  // No se puede quitar la copia: es lo único que queda de lo borrado.
+  await assert.rejects(engine.quitarCopiado(r), /ya se retiró/);
 });
 
-test('"cuarentena": no pisa nada que ya exista en la cuarentena (el original se queda donde estaba)', async (t) => {
+test('borrado definitivo: no sigue enlaces dentro del árbol que se borra (una vez que se borra, lo ajeno queda)', async (t) => {
+  // Con enlaces el motor se niega antes de borrar; esta prueba confirma que el borrado en sí usa rm sin seguir enlaces.
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'transfer.js'), 'utf8');
+  assert.match(source, /async function deleteTree\(sourcePath\) \{\s*await fsp\.rm\(sourcePath, \{ recursive: true, force: false \}\);\s*\}/);
+});
+
+// ----------------------------------------------------------- Papelera que falla + eliminarDefinitivamente
+
+async function papeleraFalla(t, { bigBytes = false, extra = {} } = {}) {
   const base = tmpDir(t);
   const src = makeSource(base);
   const dest = makeDest(base);
   const before = snapshot(src);
-  const { engine, quarantine } = makeEngine(base);
-  const pf = await engine.preflight(moveOpts(src, dest, 'cuarentena'));
-  const qDest = path.join(quarantine, 'BoneYardDog-Cuarentena', '2026-10-27_1405', ...withoutDrive(src));
-  write(path.join(qDest, 'previo.txt'), 'ya estaba');
+  const attempts = [];
+  const { engine } = makeEngine(base, {
+    trash: async (p) => {
+      attempts.push(p);
+      throw new Error('Windows rechazó enviar a la Papelera (E_ABORT)');
+    },
+    ...extra,
+  });
+  const pf = await engine.preflight(moveOpts(src, dest, 'papelera'));
   const r = await engine.run(pf.plan);
-  assert.equal(r.carpetas[0].resultado, 'original-sin-tocar');
-  assert.match(r.carpetas[0].motivo, /Ya existe algo en la cuarentena/);
-  assert.equal(fs.readFileSync(path.join(qDest, 'previo.txt'), 'utf8'), 'ya estaba');
+  return { base, src, dest, before, engine, r, attempts };
+}
+
+test('la Papelera que falla deja el original, con el código papelera-fallo y el mensaje original; y permite el borrado posterior', async (t) => {
+  const { src, before, engine, r, attempts, dest } = await papeleraFalla(t);
+  const c = r.carpetas[0];
+  assert.equal(c.resultado, 'original-sin-tocar');
+  assert.equal(c.motivoCodigo, 'papelera-fallo');
+  assert.match(c.motivo, /Windows rechazó enviar a la Papelera \(E_ABORT\)/);
+  assert.equal(c.errorPapelera, 'Windows rechazó enviar a la Papelera (E_ABORT)');
+  assert.equal(c.verificada, true);
+  assert.deepEqual(attempts, [src]);
   assert.deepEqual(snapshot(src), before);
+  // Sin confirmación no se hace nada.
+  await assert.rejects(engine.eliminarDefinitivamente(r, [0], { confirm: false }), /confirmación/);
+  await assert.rejects(engine.eliminarDefinitivamente(r, [0]), /confirmación/);
+  assert.deepEqual(snapshot(src), before);
+  // Con confirmación, el borrado definitivo ocurre.
+  const out = await engine.eliminarDefinitivamente(r, [0], { confirm: true });
+  assert.equal(out.carpetas[0].resultado, 'original-borrado-definitivamente');
+  assert.equal(out.manifiestoActualizado, true);
+  assert.equal(fs.existsSync(src), false);
+  assert.deepEqual(snapshot(r.carpetas[0].destino), before, 'la copia sigue idéntica');
+  assert.equal(r.carpetas[0].resultado, 'original-borrado-definitivamente', 'el resultado se actualizó');
+  const man = JSON.parse(fs.readFileSync(path.join(r.batchFolder, 'MANIFIESTO.json'), 'utf8'));
+  assert.deepEqual(man.carpetas[0].original, { accion: 'borrado-definitivo', motivo: null });
+  const estado = JSON.parse(fs.readFileSync(path.join(r.batchFolder, 'ESTADO.json'), 'utf8'));
+  assert.equal(estado.carpetas[0].resultado, 'original-borrado-definitivamente');
+  // Una carpeta ya borrada no se puede borrar otra vez.
+  await assert.rejects(engine.eliminarDefinitivamente(r, [0], { confirm: true }), /no se puede borrar así/);
+  assert.ok(dest);
+});
+
+test('eliminarDefinitivamente rechaza índices inválidos y carpetas que no fallaron por la Papelera, sin tocar nada', async (t) => {
+  const { src, before, engine, r } = await papeleraFalla(t);
+  for (const malo of [[], [1], [-1], [1.5], ['0'], [0, 0], null, undefined, 'x', [null], [NaN], [0, 7]]) {
+    await assert.rejects(engine.eliminarDefinitivamente(r, malo, { confirm: true }), Error, JSON.stringify(malo));
+    assert.deepEqual(snapshot(src), before, JSON.stringify(malo));
+  }
+  await assert.rejects(engine.eliminarDefinitivamente({}, [0], { confirm: true }), /Resultado no válido/);
+  await assert.rejects(engine.eliminarDefinitivamente(null, [0], { confirm: true }), /Resultado no válido/);
+  await assert.rejects(engine.eliminarDefinitivamente({ ...r }, [0], { confirm: true }), /Resultado no válido/, 'una copia sin el estado interno del motor no sirve');
+
+  // Una carpeta cuyo original se dejó a propósito ("ninguna") no es candidata.
+  const base = tmpDir(t);
+  const s2 = makeSource(base);
+  const d2 = makeDest(base);
+  const e2 = makeEngine(base).engine;
+  const r2 = await e2.run((await e2.preflight(moveOpts(s2, d2, 'ninguna'))).plan);
+  await assert.rejects(e2.eliminarDefinitivamente(r2, [0], { confirm: true }), /no se puede borrar así/);
+  // Ni una copia (modo copiar).
+  const r3 = await e2.run((await e2.preflight(copyOpts(s2, d2))).plan);
+  await assert.rejects(e2.eliminarDefinitivamente(r3, [0], { confirm: true }), /no se puede borrar así/);
+  assert.ok(fs.existsSync(path.join(s2, 'a.txt')));
+});
+
+test('eliminarDefinitivamente vuelve a comprobar TODO: origen cambiado, copia incompleta, enlaces, protegida o sin verificar', async (t) => {
+  // Origen cambiado después del resultado.
+  {
+    const { src, engine, r } = await papeleraFalla(t);
+    write(path.join(src, 'llegó-después.txt'), 'nuevo');
+    const out = await engine.eliminarDefinitivamente(r, [0], { confirm: true });
+    assert.equal(out.carpetas[0].resultado, 'original-sin-tocar');
+    assert.match(out.carpetas[0].motivo, /cambió/);
+    assert.ok(fs.existsSync(path.join(src, 'llegó-después.txt')));
+  }
+  // Copia incompleta.
+  {
+    const { src, dest, engine, r, before } = await papeleraFalla(t);
+    fs.unlinkSync(findFile(dest, 'a.txt'));
+    const out = await engine.eliminarDefinitivamente(r, [0], { confirm: true });
+    assert.equal(out.carpetas[0].resultado, 'original-sin-tocar');
+    assert.match(out.carpetas[0].motivo, /copia/);
+    assert.deepEqual(snapshot(src), before);
+  }
+  // Enlace nuevo en el origen.
+  {
+    const { src, base, engine, r, before } = await papeleraFalla(t);
+    try {
+      fs.symlinkSync(path.join(base, 'destino'), path.join(src, 'trampa'), 'dir');
+      const out = await engine.eliminarDefinitivamente(r, [0], { confirm: true });
+      assert.equal(out.carpetas[0].resultado, 'original-sin-tocar');
+      assert.ok(fs.existsSync(path.join(src, 'a.txt')));
+      assert.notDeepEqual(snapshot(src), before);
+    } catch (err) {
+      if (!/EPERM|EACCES|ENOSYS/.test(String(err.code))) throw err;
+    }
+  }
+  // Pasó a estar protegida.
+  {
+    const flag = { on: false };
+    const { src, engine, r } = await papeleraFalla(t, { extra: { isProtected: (p) => flag.on && path.basename(p) === 'Datos ñandú 🐕 con espacios' } });
+    flag.on = true;
+    const out = await engine.eliminarDefinitivamente(r, [0], { confirm: true });
+    assert.equal(out.carpetas[0].resultado, 'original-sin-tocar');
+    assert.match(out.carpetas[0].motivo, /protegida/);
+    assert.ok(fs.existsSync(path.join(src, 'a.txt')));
+  }
+  // Marcada como no verificada (un resultado manipulado).
+  {
+    const { src, engine, r, before } = await papeleraFalla(t);
+    r.carpetas[0].verificada = false;
+    const out = await engine.eliminarDefinitivamente(r, [0], { confirm: true });
+    assert.equal(out.carpetas[0].resultado, 'original-sin-tocar');
+    assert.match(out.carpetas[0].motivo, /verificada/);
+    assert.deepEqual(snapshot(src), before);
+  }
+});
+
+test('"papelera-no-cabe": si la estimación decía que no cabía y la Papelera falla, el borrado posterior también es posible', async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const dest = makeDest(base);
+  const probe = (await makeEngine(base).engine.preflight(copyOpts(src, dest))).plan.totals.bytes;
+  const { engine } = makeEngine(base, {
+    volumeInfo: async (p) => (p === dest ? { driveType: 'fixed', fileSystem: 'NTFS', sizeBytes: 1e12, freeBytes: 5e11 } : { driveType: 'fixed', fileSystem: 'NTFS', sizeBytes: probe * 10, freeBytes: 1 }),
+    trash: async () => {
+      throw new Error('no cabe');
+    },
+  });
+  const pf = await engine.preflight(moveOpts(src, dest, 'papelera'));
+  const r = await engine.run(pf.plan);
+  assert.equal(r.carpetas[0].motivoCodigo, 'papelera-no-cabe');
+  const out = await engine.eliminarDefinitivamente(r, [0], { confirm: true });
+  assert.equal(out.carpetas[0].resultado, 'original-borrado-definitivamente');
+  assert.equal(fs.existsSync(src), false);
 });
 
 test('"ninguna": el original no se toca aunque todo esté verificado', async (t) => {
@@ -973,7 +1330,7 @@ test('la protección se revalida justo antes de retirar el original', async (t) 
   protectedNow = true; // pasa a estar protegida entre la planificación y la retirada
   const r = await engine.run(pf.plan, { hooks: {} });
   assert.equal(r.carpetas[0].resultado, 'original-sin-tocar');
-  assert.match(r.carpetas[0].motivo, /protegida/);
+  assert.match(r.carpetas[0].motivo, /protegida por el sistema \(se volvió a comprobar antes de retirarla\)/, 'lo decide la guarda explícita de protección');
   assert.deepEqual(trashed, []);
 });
 
@@ -1098,7 +1455,7 @@ test('verifyBatch: manifiesto ausente, dañado o con rutas que intentan salir de
 
 // ============================================= la regla de oro, revisada en el código fuente
 
-test('REGLA DE ORO (código fuente): las únicas eliminaciones están en las funciones permitidas y la Papelera solo se llama al retirar', () => {
+test('REGLA DE ORO (código fuente): las únicas eliminaciones están en las funciones permitidas, y solo tras verificar', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'transfer.js'), 'utf8');
   const lines = source.split('\n');
   const enclosing = (index) => {
@@ -1108,28 +1465,54 @@ test('REGLA DE ORO (código fuente): las únicas eliminaciones están en las fun
     }
     return null;
   };
-  const allowed = { removeOwn: ['unlink'], removeCreatedEntry: ['unlink', 'rmdir'], disposeOriginal: ['rename', 'trash'], preflight: ['unlink'] };
+  const allowed = { removeOwn: ['unlink'], removeCreatedEntry: ['unlink', 'rmdir'], trashOriginal: ['trash'], deleteTree: ['rm'], preflight: ['unlink'] };
   const found = [];
   lines.forEach((line, i) => {
     if (/^\s*(\/\/|\*|\/\*)/.test(line)) return; // comentarios
-    for (const m of line.matchAll(/\b(?:fsp|fs|promises)\.(unlink|rm|rmdir|rename|truncate|rmSync|unlinkSync|renameSync|rmdirSync)\(|\bawait trash\(/g)) {
+    for (const m of line.matchAll(/\b(?:fsp|fs|promises)\.(unlink|rm|rmdir|rename|truncate|rmSync|unlinkSync|renameSync|rmdirSync|cp|cpSync)\(|\bawait trash\(/g)) {
       found.push({ fn: enclosing(i), kind: m[1] || 'trash', line: i + 1 });
     }
   });
   assert.ok(found.length >= 5, 'la revisión encontró las llamadas esperadas');
   for (const f of found) assert.ok((allowed[f.fn] || []).includes(f.kind), `${f.kind} en ${f.fn} (línea ${f.line}) no está permitido`);
+  // Nunca se renombra ni se mueve nada (ya no existe la cuarentena).
+  assert.equal(found.filter((f) => f.kind === 'rename').length, 0);
+  assert.doesNotMatch(source, /fsp\.rename|\.renameSync/);
   // preflight solo puede borrar su propia sonda.
   const probeLines = found.filter((f) => f.fn === 'preflight');
   assert.equal(probeLines.length, 1);
   assert.match(lines[probeLines[0].line - 1], /unlink\(probePath\)/);
-  // Nada de eliminación recursiva ni de módulos externos de borrado.
-  assert.doesNotMatch(source, /\brimraf\b|recursive:\s*true,\s*force|\.rm\(|rmSync|fs-extra|trash-cli/);
+  // Un único borrado recursivo: `fs.rm` con force:false (no sigue enlaces ni calla si algo falta), y nada de librerías de borrado.
+  const rms = found.filter((f) => f.kind === 'rm');
+  assert.equal(rms.length, 1);
+  assert.match(lines[rms[0].line - 1], /fsp\.rm\(sourcePath, \{ recursive: true, force: false \}\)/);
+  assert.doesNotMatch(source, /\brimraf\b|force:\s*true|rmSync|fs-extra|trash-cli/);
   // Cada eliminación de lo propio pasa por una comprobación "dentro de mi lote".
   assert.match(source, /async function removeOwn[\s\S]*?strictlyInside\(filePath, batchFolder\)/);
   assert.match(source, /async function removeCreatedEntry[\s\S]*?strictlyInside\(p, container\)/);
-  // La disposición solo se invoca después de verificar y de volver a comprobar el origen.
-  const dispose = source.indexOf("await disposeOriginal('papelera'");
-  assert.ok(source.lastIndexOf('result.verificada', dispose) > 0);
+
+  // El borrado definitivo: deleteTree solo se llama desde permanentlyDelete, DESPUÉS de todas las comprobaciones.
+  const calls = lines.map((l, i) => ({ l, i })).filter(({ l }) => /\bawait deleteTree\(/.test(l));
+  assert.equal(calls.length, 1);
+  assert.equal(enclosing(calls[0].i), 'permanentlyDelete');
+  const fn = source.slice(source.indexOf('async function permanentlyDelete'), source.indexOf('await deleteTree('));
+  const order = ['confirm !== true', "verified !== true || verify !== 'full'", 'folder.links.length', 'isProtected(folder.source)', 'sourceChangeReason(folder)', 'copyProblem(folder, destBase, batchFolder, fsName)'];
+  let at = -1;
+  for (const needle of order) {
+    const idx = fn.indexOf(needle);
+    assert.ok(idx > at, `permanentlyDelete debe comprobar «${needle}» antes de borrar, y en este orden`);
+    at = idx;
+  }
+  // permanentlyDelete solo se invoca desde run y eliminarDefinitivamente.
+  for (const { l, i } of lines.map((l, i) => ({ l, i }))) {
+    if (/\bawait permanentlyDelete\(/.test(l)) assert.ok(['run', 'eliminarDefinitivamente'].includes(enclosing(i)), `permanentlyDelete llamada desde ${enclosing(i)}`);
+  }
+
+  // La Papelera: una sola llamada, desde run, después de verificar y de volver a comprobar el origen.
+  const trashCalls = lines.map((l, i) => ({ l, i })).filter(({ l }) => /\bawait trashOriginal\(/.test(l));
+  assert.equal(trashCalls.length, 1);
+  assert.equal(enclosing(trashCalls[0].i), 'run');
+  const dispose = source.indexOf('await trashOriginal(folder.source)');
   assert.ok(source.lastIndexOf('if (changed) {', dispose) > 0);
   assert.ok(source.lastIndexOf("plan.mode === 'move' && result.resultado === 'copiada-verificada' && result.verificada", dispose) > 0);
 });

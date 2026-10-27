@@ -101,23 +101,20 @@ function spyFs({ before, after, wrapHandle } = {}) {
   return { fs: { promises, constants: fs.constants }, calls };
 }
 
-/** Motor de pruebas: volumen NTFS fijo, Papelera falsa que quita de verdad y cuarentena dentro de la carpeta de pruebas. */
+/** Motor de pruebas: volumen NTFS fijo y Papelera falsa que quita de verdad. */
 function makeEngine(base, overrides = {}) {
   const trashed = [];
-  const quarantine = path.join(base, 'volumen-origen');
-  fs.mkdirSync(quarantine, { recursive: true });
   const engine = createTransferEngine({
     volumeInfo: async () => ({ ...NTFS_FIXED }),
     trash: async (p) => {
       trashed.push(p);
       fs.rmSync(p, { recursive: true, force: true });
     },
-    volumeRoot: async () => quarantine,
     now: () => new Date(2026, 9, 27, 14, 5).getTime(),
     appVersion: '0.0.0-prueba',
     ...overrides,
   });
-  return { engine, trashed, quarantine };
+  return { engine, trashed };
 }
 
 function makeDest(base) {

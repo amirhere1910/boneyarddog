@@ -23,6 +23,9 @@ function once(find, replace) {
   };
 }
 
+/** Varias mutaciones juntas. */
+const chain = (...fns) => (src) => fns.reduce((acc, f) => f(acc), src);
+
 /** Retirar el original ANTES de verificar: se mueve el bloque de verificación después de la retirada. */
 function reorder(src) {
   const startMark = '        // Verificación.\n';
@@ -50,7 +53,21 @@ const MUTATIONS = [
   { nombre: '(extra) no volver a comprobar la protección antes de retirar', fn: once('} else if (isProtected(folder.source)) {', '} else if (false) {') },
   { nombre: '(extra) retirar el original aunque haya enlaces o ilegibles', fn: once('} else if (folder.links.length || folder.unreadable.length || folder.special.length) {', '} else if (false) {') },
   { nombre: '(extra) quitarCopiado sin negarse cuando ya se retiró un original', fn: once("if (disposed.length) throw new Error(", 'if (false) throw new Error(') },
-  { nombre: '(extra) no revisar que el destino no esté dentro del origen', fn: once("if (R.isInside(destinationRoot, s)) block('destino-dentro-del-origen'", "if (false) block('destino-dentro-del-origen'") },
+  { nombre: '(extra) no revisar que el destino no esté dentro del origen', fn: once('if (R.isInside(destinationRoot, g) || R.isInside(destEff, effList[i])) {', 'if (false) {') },
+  { nombre: '(3B) borrado definitivo: borrar sin verificar la copia', fn: once("if (verified !== true || verify !== 'full') return keep(", 'if (false) return keep(') },
+  { nombre: '(3B) borrado definitivo: borrar sin confirmación', fn: once("if (confirm !== true) return keep('Falta la confirmación del borrado definitivo: el original sigue", "if (false) return keep('Falta la confirmación del borrado definitivo: el original sigue") },
+  { nombre: '(3B) borrado definitivo: borrar sin recomprobar el origen', fn: once('    const changed = await sourceChangeReason(folder);\n    if (changed) return keep(`El origen cambió', '    const changed = null;\n    if (changed) return keep(`El origen cambió') },
+  { nombre: '(3B) borrado definitivo: borrar sin recomprobar la copia', fn: once('if (lost) return keep(', 'if (false) return keep(') },
+  {
+    nombre: '(3B) borrado definitivo: borrar siguiendo enlaces (sin las guardas de enlaces ni de ruta real)',
+    fn: chain(
+      once('await fsp.rm(sourcePath, { recursive: true, force: false });', 'await fsp.rm(await fsp.realpath(sourcePath), { recursive: true, force: false });'),
+      once('if (!(await stillItsOwnRealPath(folder.source))) return', 'if (false) return'),
+    ),
+  },
+  { nombre: '(3B) borrado definitivo: borrar aunque haya enlaces o ilegibles', fn: once("if (folder.links.length || folder.unreadable.length || folder.special.length) {\n      return keep(", 'if (false) {\n      return keep(') },
+  { nombre: '(3B) eliminarDefinitivamente: aceptar cualquier índice (sin validar el estado de la carpeta)', fn: once("if (c.resultado !== 'original-sin-tocar' || !['papelera-fallo', 'papelera-no-cabe'].includes(c.motivoCodigo)) {", 'if (false) {') },
+  { nombre: '(3B) eliminarDefinitivamente: sin exigir confirmación', fn: once("if (confirm !== true) throw new Error('Falta la confirmación del borrado definitivo');", '') },
   { nombre: '(3B) ignorar realpath en preflight (comparar solo texto)', fn: once('const realList = await Promise.all(givenList.map(realOf));\n', 'const realList = givenList.map(() => null);\n') },
   { nombre: '(3B) ignorar realpath del destino en preflight', fn: once('const destReal = await realOf(destinationRoot);', 'const destReal = null;') },
   { nombre: '(3B) no volver a resolver realpath del origen antes de retirar', fn: once('if (!(await stillItsOwnRealPath(folder.source))) return', 'if (false) return') },

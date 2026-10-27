@@ -10,7 +10,7 @@
  *  (b) copia con verificación completa y con verificación rápida, y compara el contenido DESDE AQUÍ,
  *      de forma independiente al motor;
  *  (c) "mover" con la Papelera real: anota con exactitud qué pasó y comprueba solo las propiedades de seguridad;
- *  (d) "mover" con cuarentena real;
+ *  (d) "mover" con borrado definitivo (con confirmación) y la negativa sin ella;
  *  (e) nombres con tildes, ñ, emoji y una ruta de más de 260 caracteres;
  *  (f) cancelación.
  * Guarda smoke-artifacts/transferencia.json con TODO lo observado (incluidas las sorpresas) y termina con
@@ -127,15 +127,12 @@ async function main() {
     trashed.push(p);
     return shell.trashItem(p);
   };
-  const quarantineRoot = IS_WIN ? undefined : path.join(work, '.smoke-transfer', `${id}-cuarentena`);
-  if (quarantineRoot) cleanup.push(quarantineRoot);
   const mkEngine = (extra = {}) =>
     createTransferEngine({
       // En Windows se consulta el volumen real. En otros sistemas (solo para poder ensayar aquí) se simula un disco fijo.
       volumeInfo: IS_WIN ? (p) => volumeInfoForPath(p) : async () => ({ driveType: 'fixed', fileSystem: 'otro', sizeBytes: 250e9, freeBytes: 30e9 }),
       trash: realTrash,
       appVersion: 'smoke',
-      ...(quarantineRoot ? { volumeRoot: async () => quarantineRoot } : {}),
       ...extra,
     });
 
@@ -234,34 +231,32 @@ async function main() {
     report.scenarios.c_mover_papelera = entry;
   }
 
-  // ---- (d) mover con cuarentena real
+  // ---- (d) borrado definitivo: sin confirmación no borra; con ella, original ausente y copia idéntica
   {
-    const s = path.join(srcBase, 'cuarentena', 'Para la cuarentena ñ');
-    makeTree(s);
-    const before = snapshot(s);
+    const s1 = path.join(srcBase, 'borrar', 'Sin confirmar ñ');
+    makeTree(s1);
+    const before1 = snapshot(s1);
     const e = mkEngine();
-    const pf = await e.preflight({ sources: [s], destinationRoot: destBase, mode: 'move', verify: 'full', disposal: 'cuarentena' });
-    const entry = { bloqueos: pf.blockers.map((b) => b.code), avisos: pf.warnings.map((w) => w.code) };
-    if (!pf.plan) violation(`d: preflight bloqueó una cuarentena normal: ${JSON.stringify(pf.blockers)}`);
+    const noConf = await e.preflight({ sources: [s1], destinationRoot: destBase, mode: 'move', verify: 'full', disposal: 'borrar' });
+    const entry = { sinConfirmarBloqueos: noConf.blockers.map((b) => b.code) };
+    if (noConf.plan) violation('d: el preflight dejó pasar un borrado definitivo sin confirmación');
+    if (!same(before1, snapshot(s1))) violation('d: el origen cambió sin confirmación');
+
+    const s2 = path.join(srcBase, 'borrar', 'Confirmada ñ');
+    makeTree(s2);
+    const before2 = snapshot(s2);
+    const pf = await e.preflight({ sources: [s2], destinationRoot: destBase, mode: 'move', verify: 'full', disposal: 'borrar', confirmPermanentDelete: true });
+    if (!pf.plan) violation(`d: preflight bloqueó un borrado confirmado: ${JSON.stringify(pf.blockers)}`);
     else {
       const r = await e.run(pf.plan);
       entry.resultado = describeResult(r);
       const c = r.carpetas[0];
-      entry.originalExisteDespues = fs.existsSync(s);
-      if (c.resultado !== 'original-en-cuarentena') violation(`d: resultado inesperado ${c.resultado} (${c.motivo})`);
-      else {
-        const man = JSON.parse(fs.readFileSync(path.join(r.batchFolder, 'MANIFIESTO.json'), 'utf8'));
-        const qPath = man.carpetas[0].original.destino;
-        entry.cuarentena = qPath;
-        entry.contenidoCuarentenaIgual = same(before, snapshot(qPath));
-        entry.contenidoCopiaIgual = same(before, snapshot(c.destino));
-        if (entry.originalExisteDespues) violation('d: el original sigue en su sitio tras la cuarentena');
-        if (!entry.contenidoCuarentenaIgual || !entry.contenidoCopiaIgual) violation('d: el contenido de la cuarentena o de la copia no coincide con el original');
-        cleanup.push(path.join(qPath, '..'));
-        if (IS_WIN) cleanup.push(path.join(`${s.slice(0, 2)}\\`, 'BoneYardDog-Cuarentena', r.lote));
-      }
+      entry.originalExisteDespues = fs.existsSync(s2);
+      entry.copiaIgual = c.verificada && same(before2, snapshot(c.destino));
+      if (c.resultado !== 'original-borrado-definitivamente') violation(`d: resultado inesperado ${c.resultado} (${c.motivo})`);
+      else if (entry.originalExisteDespues || !entry.copiaIgual) violation('d: tras el borrado el original sigue o la copia no es igual');
     }
-    report.scenarios.d_mover_cuarentena = entry;
+    report.scenarios.d_borrado_definitivo = entry;
   }
 
   // ---- (e) nombres especiales y ruta de más de 260 caracteres
@@ -314,7 +309,7 @@ async function main() {
     makeTree(s, { big: 96 * 1024 * 1024 });
     const before = snapshot(s);
     const e = mkEngine();
-    const pf = await e.preflight({ sources: [s], destinationRoot: destBase, mode: 'move', verify: 'full', disposal: 'cuarentena' });
+    const pf = await e.preflight({ sources: [s], destinationRoot: destBase, mode: 'move', verify: 'full', disposal: 'papelera' });
     const entry = { bloqueos: pf.blockers.map((b) => b.code) };
     if (pf.plan) {
       const trashedBefore = trashed.length;
@@ -328,7 +323,7 @@ async function main() {
       });
       entry.resultado = describeResult(r);
       entry.papeleraLlamada = trashed.length > trashedBefore;
-      entry.originalIntacto = same(before, snapshot(s)); // si se cancela, tampoco se mueve a cuarentena
+      entry.originalIntacto = same(before, snapshot(s)); // si se cancela, el original no se toca
       const estado = JSON.parse(fs.readFileSync(path.join(r.batchFolder, 'ESTADO.json'), 'utf8'));
       entry.estadoJson = estado.estado;
       if (r.estado !== 'cancelado' || estado.estado !== 'cancelado') violation(`f: la cancelación no quedó registrada (${r.estado}/${estado.estado})`);
