@@ -103,7 +103,7 @@
     }
 
     const min = $('sel-minimo');
-    for (const o of [...min.options]) if (o.dataset.personalizado) o.remove();
+    // Una opción personalizada (valor de la configuración que no es de la lista) se queda una vez creada.
     if (![...min.options].some((o) => Number(o.value) === s.minSizeBytes)) {
       const o = el('option', '', `Personalizado (${formatBytes(s.minSizeBytes)})`);
       o.value = String(s.minSizeBytes);

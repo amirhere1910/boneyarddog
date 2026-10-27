@@ -151,3 +151,4 @@ vite.config.ts.timestamp-*
 # Carpetas temporales de las pruebas
 .test-tmp/
 smoke-artifacts/
+.smoke-data/

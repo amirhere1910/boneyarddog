@@ -226,12 +226,11 @@ async function start() {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(V.CHANNELS.progress, progress);
   });
   registerIpc();
+  // Se carga solo en modo prueba: en el uso normal este código ni se lee.
+  const smoke = SMOKE ? require('./smoke') : null;
+  const smokeFixture = smoke ? await smoke.prepare({ app, settings, service }) : null;
   mainWindow = createWindow();
-
-  if (SMOKE) {
-    // Se carga solo en modo prueba: en el uso normal este código ni se lee.
-    require('./smoke').run({ app, win: mainWindow, context, service, settings, indexUrl: INDEX_URL });
-  }
+  if (smoke) smoke.run({ app, win: mainWindow, context, service, settings, indexUrl: INDEX_URL, fixture: smokeFixture });
 }
 
 app.on('window-all-closed', () => {

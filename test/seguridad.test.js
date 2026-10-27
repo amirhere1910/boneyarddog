@@ -82,7 +82,8 @@ test('"Mostrar en el Explorador" y "Ignorar" solo aceptan rutas que el servicio 
 test('el código de la prueba automática solo se carga con BYD_SMOKE=1 y --smoke-test', () => {
   assert.match(main, /process\.env\.BYD_SMOKE === '1' && process\.argv\.includes\('--smoke-test'\)/);
   assert.equal((main.match(/require\('\.\/smoke'\)/g) || []).length, 1);
-  assert.match(main, /if \(SMOKE\) \{\s*\/\/[^\n]*\n\s*require\('\.\/smoke'\)/);
+  assert.match(main, /const smoke = SMOKE \? require\('\.\/smoke'\) : null;/);
+  assert.match(main, /if \(smoke\) smoke\.run\(/);
   assert.match(main, /smokeFolder/);
 });
 
