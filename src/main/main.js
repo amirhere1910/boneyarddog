@@ -18,6 +18,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { app, BrowserWindow, dialog, ipcMain, session, shell, Menu } = require('electron');
 
+const { Worker } = require('node:worker_threads');
 const { AnalysisService } = require('../service/service');
 const V = require('./validate');
 const { SettingsStore, validatePatch } = require('./settings');
@@ -194,6 +195,23 @@ function registerIpc() {
     return settings.update({ excludedPaths: current.filter((x) => x !== p) });
   });
 
+  handle(V.CHANNELS.treemap, async (p, options, ...rest) => {
+    V.validateNoArgs(rest);
+    V.validateAbsolutePath(p);
+    const valid = V.validateTreemapOptions(options);
+    return service.getTreemap(p, { minBytes: settings.get().mapMinBytes, ...valid });
+  });
+
+  handle(V.CHANNELS.details, async (p, ...rest) => {
+    V.validateNoArgs(rest);
+    return service.getDetails(V.validateAbsolutePath(p));
+  });
+
+  handle(V.CHANNELS.summarizeSelection, async (paths, ...rest) => {
+    V.validateNoArgs(rest);
+    return service.summarizeSelection(V.validatePathList(paths));
+  });
+
   handle(V.CHANNELS.reveal, async (p, ...rest) => {
     V.validateNoArgs(rest);
     V.validateAbsolutePath(p);
@@ -201,16 +219,6 @@ function registerIpc() {
     // Solo se muestra en el Explorador: nunca se abre ni se ejecuta nada.
     (context.revealHook || shell.showItemInFolder)(node.path);
     return { path: node.path };
-  });
-
-  handle(V.CHANNELS.largestFiles, async (n, ...rest) => {
-    V.validateNoArgs(rest);
-    return service.getLargestFiles(V.validateCount(n));
-  });
-
-  handle(V.CHANNELS.largestFolders, async (n, ...rest) => {
-    V.validateNoArgs(rest);
-    return service.getLargestFolders(V.validateCount(n));
   });
 }
 
@@ -220,7 +228,12 @@ async function start() {
   lockDownSession(session.defaultSession);
 
   settings = new SettingsStore(path.join(app.getPath('userData'), 'settings.json'));
-  service = new AnalysisService();
+  service = new AnalysisService(
+    SMOKE
+      ? // Solo en la prueba automática: una carpeta de ejemplo que se muestra como protegida.
+        { workerFactory: () => new Worker(path.join(__dirname, '..', 'service', 'analysis-worker.js'), { workerData: { smokeProtectedNames: ['Sistema protegido'] } }) }
+      : undefined,
+  );
   await service.setUsageOptions(usageFrom(settings.get()));
   service.on('progress', (progress) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(V.CHANNELS.progress, progress);

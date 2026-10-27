@@ -966,3 +966,47 @@ test('findStaleFolders con carpetas reales: subcarpeta sin permiso (simulada)', 
   assert.deepEqual(r.items.map((i) => path.relative(root, i.path)), [path.join('viejo', 'ok')]);
   assert.equal(r.notOffered.find((n) => n.path === path.join(root, 'viejo')).reason, 'contiene-no-leidos');
 });
+
+// --- Enlaces (hasLinks) ------------------------------------------------------
+
+test('hasLinks: un enlace directo marca solo al padre inmediato en el escáner; el análisis lo propaga a los ancestros', async (t) => {
+  const root = tmpDir(t);
+  putAt(root, 'viejo/a/b/dato.bin', 5000, { atimeDaysAgo: 800, mtimeDaysAgo: 800 });
+  putAt(root, 'viejo/directo/dato2.bin', 5000, { atimeDaysAgo: 800, mtimeDaysAgo: 800 });
+  putAt(root, 'limpia/x.bin', 5000, { atimeDaysAgo: 800, mtimeDaysAgo: 800 });
+  putAt(root, 'nuevo.txt', 5, { atimeDaysAgo: 1, mtimeDaysAgo: 1 });
+  try {
+    fs.symlinkSync(path.join(root, 'limpia'), path.join(root, 'viejo', 'a', 'b', 'enlace'), 'dir'); // a dos niveles
+    fs.symlinkSync(path.join(root, 'limpia', 'x.bin'), path.join(root, 'viejo', 'directo', 'enlace.bin'), 'file'); // directo
+  } catch (err) {
+    t.skip(`No se pudo crear un enlace simbólico en este sistema (${err.code})`);
+    return;
+  }
+  const { tree, skipped } = await scan(root);
+  assert.equal(skipped.filter((s) => s.kind === 'symlink').length, 2);
+  const get = (...names) => names.reduce((n, name) => n.children.find((c) => c.name === name), tree);
+  // El escáner solo marca al padre inmediato.
+  assert.equal(get('viejo', 'a', 'b').hasLinks, true);
+  assert.equal(get('viejo', 'directo').hasLinks, true);
+  assert.equal(get('viejo', 'a').hasLinks, undefined);
+  assert.equal(get('viejo').hasLinks, undefined);
+  assert.equal(get('limpia').hasLinks, undefined);
+
+  // findStaleFolders: sigue ofreciendo la carpeta, con aviso.
+  const r = findStaleFolders(tree, { ...SFR, minSizeBytes: 1000 });
+  const byName = Object.fromEntries(r.items.map((i) => [i.name, i]));
+  assert.ok(byName.viejo, 'la carpeta con enlaces sigue ofreciéndose');
+  assert.equal(byName.viejo.hasLinks, true, 'marca de los ancestros (a dos niveles y directo)');
+  assert.equal(byName.limpia.hasLinks, false);
+});
+
+test('hasLinks: propagación sintética a todos los ancestros; la carpeta sigue ofreciéndose', () => {
+  const profundo = { ...folder('/r/p/a/b', [file('/r/p/a/b/x', 300 * MB, OLD)]), hasLinks: true };
+  const tree = folder('/r', [
+    folder('/r/p', [folder('/r/p/a', [profundo])]),
+    folder('/r/q', [file('/r/q/y', 300 * MB, OLD)]),
+    file('/r/nuevo', 1, FRESH),
+  ]);
+  const r = findStaleFolders(tree, SF);
+  assert.deepEqual(r.items.map((i) => [i.path, i.hasLinks]), [['/r/p', true], ['/r/q', false]]);
+});

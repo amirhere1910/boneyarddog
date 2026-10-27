@@ -416,7 +416,7 @@ test('getStaleFolders: igual que el análisis directo, con campos livianos y new
   assert.equal(got.notOfferedCount, want.notOffered.length);
   assert.deepEqual(got.items.map((i) => i.name).sort(), ['canción ñandú 🐕', 'padre', 'vieja'].sort());
   for (const item of got.items) {
-    assert.deepEqual(Object.keys(item).sort(), ['daysUnused', 'fileCount', 'hasChildren', 'lastUsedMs', 'name', 'newestFile', 'path', 'protected', 'size', 'type']);
+    assert.deepEqual(Object.keys(item).sort(), ['daysUnused', 'fileCount', 'hasChildren', 'hasLinks', 'lastUsedMs', 'name', 'newestFile', 'path', 'protected', 'size', 'type']);
     assert.equal(item.type, 'folder');
     assert.ok(item.newestFile && item.newestFile.name && item.newestFile.ms === item.lastUsedMs);
   }
@@ -534,4 +534,229 @@ test('getNode: confirma rutas del árbol y devuelve la ruta canónica; rechaza l
   for (const mala of [path.join(root, '..'), path.join(root, 'no-existe'), '', '\0', 5, null]) {
     await assert.rejects(() => svc.getNode(mala), { code: 'RUTA_DESCONOCIDA' }, String(mala));
   }
+});
+
+// --- Mapa (getTreemap) y detalles (getDetails) -------------------------------
+
+const sumCells = (r) => r.cells.reduce((s, c) => s + c.size, 0);
+
+function buildMap(root) {
+  put(root, 'A/a1.bin', 3000, 800);
+  put(root, 'B/b1.bin', 2000, 100);
+  put(root, 'C/c1.bin', 500, 10);
+  put(root, 'D/d1.bin', 50, 5);
+  put(root, 'suelto1.bin', 900, 40);
+  put(root, 'suelto2.bin', 600, 20);
+  put(root, 'A/sub1/x.bin', 400, 700);
+  put(root, 'A/sub2/y.bin', 300, 650);
+}
+
+test('getTreemap: celdas por subcarpeta, archivos sueltos y "otras"; no se pierde ni un byte', async (t) => {
+  const root = tmpDir(t);
+  buildMap(root);
+  const svc = await newRealService(t);
+  await svc.startScan(root);
+
+  const r = await svc.getTreemap(root, { minBytes: 1000 });
+  assert.equal(r.folder.path, path.resolve(root));
+  assert.equal(r.totalBytes, 3000 + 400 + 300 + 2000 + 500 + 50 + 900 + 600);
+  assert.equal(sumCells(r), r.totalBytes, 'la suma de celdas = tamaño de la carpeta');
+  const kinds = r.cells.map((c) => [c.kind, c.name]);
+  assert.deepEqual(kinds, [['folder', 'A'], ['folder', 'B'], ['files', 'Archivos sueltos'], ['others', 'Otras']]);
+  const files = r.cells.find((c) => c.kind === 'files');
+  assert.equal(files.size, 1500);
+  assert.equal(files.fileCount, 2);
+  assert.equal(files.path, undefined);
+  const others = r.cells.find((c) => c.kind === 'others');
+  assert.equal(others.size, 550);
+  assert.equal(others.bytes, 550);
+  assert.equal(others.count, 2, 'dos carpetas pequeñas: C y D');
+  assert.equal(others.fileCount, 2);
+  assert.ok(Math.abs(others.daysUnused - 5) <= 1, 'su fecha es la más reciente del grupo');
+  assert.deepEqual(Object.keys(r.cells[0]).sort(), ['canEnter', 'daysUnused', 'fileCount', 'hasLinks', 'kind', 'lastUsedMs', 'name', 'path', 'protected', 'size', 'unreadable']);
+  const A = r.cells[0];
+  assert.equal(A.canEnter, true, 'A tiene subcarpetas');
+  assert.equal(r.cells[1].canEnter, false);
+  assert.ok(Math.abs(A.daysUnused - 650) <= 1);
+  assert.equal(A.protected, false);
+  assert.equal(A.hasLinks, false);
+  assert.equal(A.unreadable, false);
+  assert.equal(r.parentPath, null);
+  assert.deepEqual(r.breadcrumbs, [{ name: path.basename(root), path: path.resolve(root) }]);
+});
+
+test('getTreemap: minBytes mueve carpetas entre celdas propias y "otras"', async (t) => {
+  const root = tmpDir(t);
+  buildMap(root);
+  const svc = await newRealService(t);
+  await svc.startScan(root);
+  const todo = await svc.getTreemap(root, { minBytes: 0 });
+  assert.deepEqual(todo.cells.map((c) => c.name), ['A', 'B', 'Archivos sueltos', 'C', 'D'], 'sin mínimo no hay "otras"');
+  assert.equal(sumCells(todo), todo.totalBytes);
+  const alto = await svc.getTreemap(root, { minBytes: 10_000 });
+  assert.deepEqual(alto.cells.map((c) => c.kind), ['others']);
+  assert.equal(alto.cells[0].count, 4);
+  assert.equal(alto.cells[0].looseFiles, 2);
+  assert.equal(sumCells(alto), alto.totalBytes);
+  const porDefecto = await svc.getTreemap(root);
+  assert.deepEqual(porDefecto.cells.map((c) => c.kind), ['others'], 'por defecto 100 MB');
+});
+
+test('getTreemap: tope de celdas con "otras" incluida, sin perder bytes', async (t) => {
+  const root = tmpDir(t);
+  for (let i = 0; i < 25; i++) put(root, `c${String(i).padStart(2, '0')}/f.bin`, 1000 + i * 10, 30);
+  const svc = await newRealService(t);
+  await svc.startScan(root);
+  const r = await svc.getTreemap(root, { minBytes: 0, maxCells: 10 });
+  assert.equal(r.cells.length, 10);
+  assert.equal(r.cells[9].kind, 'others');
+  assert.equal(r.cells[9].count, 25 - 9);
+  assert.equal(sumCells(r), r.totalBytes);
+  // El tope exacto: 10 carpetas caben sin "otras".
+  const ten = tmpDir(t);
+  for (let i = 0; i < 10; i++) put(ten, `c${i}/f.bin`, 100, 1);
+  await svc.startScan(ten);
+  const exact = await svc.getTreemap(ten, { minBytes: 0, maxCells: 10 });
+  assert.deepEqual([exact.cells.length, exact.cells.some((c) => c.kind === 'others')], [10, false]);
+});
+
+test('getTreemap: migas de pan y carpeta padre al entrar en subcarpetas', async (t) => {
+  const root = tmpDir(t);
+  buildMap(root);
+  const svc = await newRealService(t);
+  await svc.startScan(root);
+  const sub = await svc.getTreemap(path.join(root, 'A'), { minBytes: 0 });
+  assert.deepEqual(sub.breadcrumbs.map((b) => b.name), [path.basename(root), 'A']);
+  assert.equal(sub.breadcrumbs[1].path, path.join(root, 'A'));
+  assert.equal(sub.parentPath, path.resolve(root));
+  assert.deepEqual(sub.cells.map((c) => c.name), ['Archivos sueltos', 'sub1', 'sub2']);
+  assert.equal(sumCells(sub), 3700);
+  const hondo = await svc.getTreemap(path.join(root, 'A', 'sub1'), { minBytes: 0 });
+  assert.deepEqual(hondo.breadcrumbs.map((b) => b.name), [path.basename(root), 'A', 'sub1']);
+  assert.equal(hondo.parentPath, path.join(root, 'A'));
+  assert.deepEqual(hondo.cells.map((c) => c.name), ['Archivos sueltos']);
+});
+
+test('getTreemap/getDetails: rutas desconocidas y opciones inválidas se rechazan', async (t) => {
+  const root = tmpDir(t);
+  buildMap(root);
+  const svc = await newRealService(t);
+  await assert.rejects(() => svc.getTreemap(root), { code: 'SIN_ANALISIS' });
+  await assert.rejects(() => svc.getDetails(root), { code: 'SIN_ANALISIS' });
+  await svc.startScan(root);
+  for (const mala of [path.join(root, '..'), path.join(root, 'no-existe'), '', '\0', 5, null, { path: root }]) {
+    await assert.rejects(() => svc.getTreemap(mala), { code: 'RUTA_DESCONOCIDA' }, String(mala));
+    await assert.rejects(() => svc.getDetails(mala), { code: 'RUTA_DESCONOCIDA' }, String(mala));
+  }
+  await assert.rejects(() => svc.getTreemap(path.join(root, 'suelto1.bin')), { code: 'NO_ES_CARPETA' });
+  for (const mal of [-1, 10 * 1024 ** 4 + 1, 1.5, '5', NaN]) await assert.rejects(() => svc.getTreemap(root, { minBytes: mal }), RangeError, `minBytes ${mal}`);
+  for (const mal of [9, 201, 50.5, '80', NaN]) await assert.rejects(() => svc.getTreemap(root, { maxCells: mal }), RangeError, `maxCells ${mal}`);
+  await assert.rejects(() => svc.getTreemap(root, []), TypeError);
+  await assert.doesNotReject(() => svc.getTreemap(root, { minBytes: 0, maxCells: 10 }));
+  await assert.doesNotReject(() => svc.getTreemap(root, { minBytes: 10 * 1024 ** 4, maxCells: 200 }));
+});
+
+test('getTreemap: las fechas cambian de forma coherente con setUsageOptions', async (t) => {
+  const root = tmpDir(t);
+  const f = path.join(root, 'av', 'a.bin');
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, Buffer.alloc(3000, 1));
+  fs.utimesSync(f, new Date(), new Date(Date.now() - 700 * DAY)); // acceso hoy, modificación hace 700 días
+  put(root, 'otra/b.bin', 3000, 3);
+  const svc = await newRealService(t);
+  await svc.startScan(root);
+  const days = async () => Object.fromEntries((await svc.getTreemap(root, { minBytes: 0 })).cells.map((c) => [c.name, c.daysUnused]));
+  assert.ok((await days()).av >= 699);
+  await svc.setUsageOptions({ useAccessTime: true });
+  assert.ok((await days()).av <= 1, 'con acceso contando, está en uso');
+  await svc.setUsageOptions({ useAccessTime: false });
+  assert.ok((await days()).av >= 699);
+  // Y coincide con la lista de candidatas.
+  const stale = await svc.getStaleFolders({ olderThanDays: 90, minSizeBytes: 1000 });
+  assert.equal(stale.items.find((i) => i.name === 'av').daysUnused, (await days()).av);
+});
+
+test('getTreemap: mensajes pequeños aunque haya cientos de carpetas', async (t) => {
+  const root = tmpDir(t);
+  for (let i = 0; i < 400; i++) put(root, `c${String(i).padStart(3, '0')}/f.bin`, 100 + i, 50);
+  const sizes = [];
+  const svc = newService(t, {
+    workerFactory: () => {
+      const w = new Worker(path.join(__dirname, '..', 'src', 'service', 'analysis-worker.js'));
+      w.on('message', (m) => sizes.push(v8.serialize(m).length));
+      return w;
+    },
+  });
+  await svc.startScan(root);
+  sizes.length = 0;
+  const r = await svc.getTreemap(root, { minBytes: 0, maxCells: 200 });
+  const d = await svc.getDetails(root);
+  assert.equal(r.cells.length, 200);
+  assert.equal(sizes.length, 2);
+  assert.ok(Math.max(...sizes) < 100_000, `mensaje de ${Math.max(...sizes)} bytes`);
+  assert.ok(!JSON.stringify([r, d]).includes('"children"'));
+});
+
+test('getDetails: carpeta con enlace, tramos de antigüedad, subcarpetas más pesadas y archivo más reciente', async (t) => {
+  const root = tmpDir(t);
+  put(root, 'g/m1.bin', 1000, 10); // hasta 30
+  put(root, 'g/m2.bin', 2000, 60); // hasta 90
+  put(root, 'g/m3.bin', 3000, 150); // hasta 180
+  put(root, 'g/m4.bin', 4000, 300); // hasta 365
+  put(root, 'g/m5.bin', 5000, 900); // más de 365
+  for (let i = 0; i < 7; i++) put(root, `g/s${i}/f.bin`, 100 * (i + 1), 500);
+  put(root, 'externo/x.bin', 10, 1);
+  let linked = true;
+  try {
+    fs.symlinkSync(path.join(root, 'externo'), path.join(root, 'g', 'enlace'), 'dir');
+  } catch {
+    linked = false;
+  }
+  const svc = await newRealService(t);
+  await svc.startScan(root);
+  const d = await svc.getDetails(path.join(root, 'g'), { now: Date.now() });
+
+  assert.equal(d.type, 'folder');
+  assert.equal(d.name, 'g');
+  assert.equal(d.size, 15000 + 2800);
+  assert.equal(d.fileCount, 12);
+  assert.equal(d.folderCount, 7);
+  assert.equal(d.newestFile.name, 'm1.bin');
+  assert.ok(Math.abs(d.daysUnused - 10) <= 1);
+  assert.equal(d.protected, false);
+  assert.equal(d.containsProtected, false);
+  assert.equal(d.unreadable, false);
+  if (linked) assert.equal(d.hasLinks, true, 'el enlace dentro se avisa');
+  assert.deepEqual(Object.fromEntries(Object.entries(d.ageBuckets).map(([k, v]) => [k, v.bytes])), { hasta30: 1000, hasta90: 2000, hasta180: 3000, hasta365: 4000, mas365: 5000 + 2800, desconocido: 0 });
+  assert.equal(d.ageBuckets.mas365.files, 1 + 7);
+  assert.deepEqual(d.topSubfolders.map((s) => s.name), ['s6', 's5', 's4', 's3', 's2'], 'las 5 más pesadas');
+  assert.equal(d.topSubfolders[0].size, 700);
+
+  const f = await svc.getDetails(path.join(root, 'g', 'm5.bin'));
+  assert.equal(f.type, 'file');
+  assert.equal(f.size, 5000);
+  assert.equal(f.folderCount, 0);
+  assert.ok(f.ageBuckets.mas365.files === 1 && f.newestFile.name === 'm5.bin');
+  assert.deepEqual(f.topSubfolders, []);
+
+  const sinEnlace = await svc.getDetails(path.join(root, 'externo'));
+  assert.equal(sinEnlace.hasLinks, false);
+});
+
+test('getDetails: la marca de enlaces llega también a las celdas del mapa y a los ancestros', async (t) => {
+  const root = tmpDir(t);
+  put(root, 'arriba/medio/bajo/x.bin', 2000, 30);
+  put(root, 'afuera/y.bin', 10, 1);
+  try {
+    fs.symlinkSync(path.join(root, 'afuera'), path.join(root, 'arriba', 'medio', 'bajo', 'enlace'), 'dir');
+  } catch (err) {
+    t.skip(`No se pudo crear un enlace simbólico en este sistema (${err.code})`);
+    return;
+  }
+  const svc = await newRealService(t);
+  await svc.startScan(root);
+  const cells = (await svc.getTreemap(root, { minBytes: 0 })).cells;
+  assert.equal(cells.find((c) => c.name === 'arriba').hasLinks, true);
+  assert.equal(cells.find((c) => c.name === 'afuera').hasLinks, false);
+  assert.equal((await svc.getDetails(path.join(root, 'arriba', 'medio'))).hasLinks, true);
 });

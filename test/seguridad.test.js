@@ -56,7 +56,6 @@ test('cada manejador IPC pasa por handle(): comprueba remitente y valida', () =>
     assert.match(main, new RegExp(`handle\\(V\\.CHANNELS\\.${channel}`), channel);
   }
   assert.match(main, /validateNoArgs/);
-  assert.match(main, /validateCount/);
   assert.match(main, /validateAbsolutePath/);
 });
 

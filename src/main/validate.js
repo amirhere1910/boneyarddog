@@ -14,8 +14,6 @@ const CHANNELS = Object.freeze({
   chooseFolder: 'byd:choose-folder',
   startScan: 'byd:start-scan',
   cancelScan: 'byd:cancel-scan',
-  largestFiles: 'byd:largest-files',
-  largestFolders: 'byd:largest-folders',
   getSettings: 'byd:get-settings',
   saveSettings: 'byd:save-settings',
   staleFolders: 'byd:stale-folders',
@@ -24,6 +22,9 @@ const CHANNELS = Object.freeze({
   listDrives: 'byd:list-drives',
   chooseDrive: 'byd:choose-drive',
   reveal: 'byd:reveal',
+  treemap: 'byd:treemap',
+  details: 'byd:details',
+  summarizeSelection: 'byd:summarize-selection',
   progress: 'byd:progress',
 });
 
@@ -54,6 +55,34 @@ function validateAbsolutePath(p) {
   if (!path.isAbsolute(p)) throw new ValidationError('La ruta debe ser absoluta');
   if (p.split(/[\\/]+/).includes('..')) throw new ValidationError('La ruta no puede contener ".."');
   return p;
+}
+
+/** Opciones del mapa: solo minBytes (0–10 TB) y maxCells (10–200); todo opcional. */
+function validateTreemapOptions(options) {
+  if (options === undefined) return {};
+  if (options === null || typeof options !== 'object' || Array.isArray(options)) throw new ValidationError('Las opciones del mapa deben ser un objeto');
+  const out = {};
+  for (const key of Object.keys(options)) {
+    if (key === 'minBytes') {
+      const v = options.minBytes;
+      if (!Number.isInteger(v) || v < 0 || v > 10 * 1024 ** 4) throw new ValidationError('minBytes debe ser un entero entre 0 y 10 TB');
+      out.minBytes = v;
+    } else if (key === 'maxCells') {
+      const v = options.maxCells;
+      if (!Number.isInteger(v) || v < 10 || v > 200) throw new ValidationError('maxCells debe ser un entero entre 10 y 200');
+      out.maxCells = v;
+    } else {
+      throw new ValidationError(`Opción del mapa desconocida: ${key}`);
+    }
+  }
+  return out;
+}
+
+/** Lista de rutas absolutas (hasta `max`). Las repetidas no se quitan: el servicio las informa. */
+function validatePathList(list, max = 500) {
+  if (!Array.isArray(list) || list.length > max) throw new ValidationError(`Debe ser una lista de hasta ${max} rutas`);
+  for (const p of list) validateAbsolutePath(p);
+  return list;
 }
 
 /** Una sola letra de unidad (A–Z). Devuelve la letra en mayúscula. */
@@ -113,6 +142,8 @@ module.exports = {
   validateCount,
   validateAbsolutePath,
   validateDriveLetter,
+  validateTreemapOptions,
+  validatePathList,
   validateNoArgs,
   isTrustedSender,
   sameFileUrl,

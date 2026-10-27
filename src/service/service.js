@@ -128,6 +128,16 @@ class AnalysisService extends EventEmitter {
     return this._call('getStale', options);
   }
 
+  /** Celdas del mapa de una carpeta: { minBytes, maxCells }. */
+  getTreemap(folderPath, options) {
+    return this._call('getTreemap', folderPath, options);
+  }
+
+  /** Detalles de una carpeta o archivo. */
+  getDetails(p, options) {
+    return this._call('getDetails', p, options);
+  }
+
   /** Carpetas sin uso: { olderThanDays, minSizeBytes, excludedPaths }. */
   getStaleFolders(options) {
     return this._call('getStaleFolders', options);

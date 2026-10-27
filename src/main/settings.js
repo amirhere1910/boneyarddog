@@ -28,6 +28,7 @@ const DEFAULTS = Object.freeze({
   minSizeBytes: 500 * 1024 * 1024, // 500 MB
   useAccessTime: false,
   useCreationTime: true,
+  mapMinBytes: 100 * 1024 * 1024, // 100 MB: carpetas que muestra el mapa
   excludedPaths: Object.freeze([]),
 });
 
@@ -38,6 +39,10 @@ const FIELDS = {
   },
   minSizeBytes: (v) => {
     if (!Number.isInteger(v) || v < 0 || v > MAX_BYTES) throw new ValidationError('minSizeBytes debe ser un entero entre 0 y 10 TB');
+    return v;
+  },
+  mapMinBytes: (v) => {
+    if (!Number.isInteger(v) || v < 0 || v > MAX_BYTES) throw new ValidationError('mapMinBytes debe ser un entero entre 0 y 10 TB');
     return v;
   },
   useAccessTime: (v) => {

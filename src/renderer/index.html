@@ -40,9 +40,11 @@
 
   <!-- 3. Resultado -->
   <div id="vista-resultado" hidden>
-    <section class="panel" aria-labelledby="res-titulo">
-      <h2 id="res-titulo" tabindex="-1">–</h2>
-      <p id="res-carpeta" class="ruta"></p>
+    <section class="panel" aria-label="Resultado del análisis">
+      <div class="fila fila-entre">
+        <p id="res-carpeta" class="ruta"></p>
+        <button id="btn-nuevo" type="button" class="secundario">Revisar otra unidad o carpeta</button>
+      </div>
 
       <div class="controles">
         <div class="campo">
@@ -68,28 +70,85 @@
           </div>
           <p id="ayuda-custom" class="nota">Entre 7 días y 10 años.</p>
         </div>
-        <div class="campo">
-          <label for="sel-minimo">Tamaño mínimo</label>
-          <select id="sel-minimo">
-            <option value="104857600">100 MB</option>
-            <option value="524288000">500 MB</option>
-            <option value="1073741824">1 GB</option>
-            <option value="5368709120">5 GB</option>
-            <option value="10737418240">10 GB</option>
-          </select>
-        </div>
         <p id="calculando" class="calculando" role="status" hidden>Calculando…</p>
       </div>
+      <p id="estado-accion" class="nota" role="status"></p>
 
-      <p id="aviso-omitidos" class="nota" hidden></p>
-      <p id="aviso-no-ofrecidas" class="nota" hidden></p>
-      <p id="vacio" class="vacio" hidden>No hay carpetas sin uso con estos filtros.</p>
-      <ul id="lista" class="lista" aria-label="Carpetas sin uso"></ul>
+      <div class="pestanas" role="tablist" aria-label="Vistas">
+        <button id="tab-mapa" type="button" role="tab" aria-selected="true" aria-controls="panel-mapa" tabindex="0">Mapa</button>
+        <button id="tab-lista" type="button" role="tab" aria-selected="false" aria-controls="panel-lista" tabindex="-1">Lista de candidatas</button>
+      </div>
 
-      <div class="fila acciones-pie">
-        <button id="btn-mover" type="button" disabled aria-describedby="txt-mover">Mover a disco externo…</button>
-        <span id="txt-mover" class="nota">Disponible en la próxima versión</span>
-        <button id="btn-nuevo" type="button" class="secundario">Revisar otra unidad o carpeta</button>
+      <!-- Pestaña Mapa -->
+      <div id="panel-mapa" role="tabpanel" aria-labelledby="tab-mapa">
+        <div class="barra-mapa">
+          <nav aria-label="Ruta de carpetas"><ol id="migas" class="migas"></ol></nav>
+          <button id="btn-abrir-explorador" type="button" class="secundario">Abrir en el Explorador</button>
+          <div class="campo campo-fila">
+            <label for="sel-mapa-min">Mostrar carpetas de más de</label>
+            <select id="sel-mapa-min">
+              <option value="10485760">10 MB</option>
+              <option value="52428800">50 MB</option>
+              <option value="104857600">100 MB</option>
+              <option value="524288000">500 MB</option>
+              <option value="1073741824">1 GB</option>
+            </select>
+          </div>
+        </div>
+        <p id="mapa-aviso" class="nota" role="status" hidden></p>
+        <div id="mapa-zona" class="mapa-zona">
+          <div id="mapa-contenedor" class="mapa-contenedor">
+            <div id="mapa" class="mapa" role="group" aria-label="Mapa de carpetas por tamaño"></div>
+            <p id="mapa-estado" class="mapa-estado" role="status" hidden></p>
+            <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+          </div>
+          <aside id="panel-detalles" class="detalles" aria-labelledby="det-titulo" hidden>
+            <div class="fila fila-entre">
+              <h2 id="det-titulo" tabindex="-1">Detalles</h2>
+              <button id="btn-cerrar-detalles" type="button" class="secundario">Cerrar</button>
+            </div>
+            <dl id="det-lista" class="det-lista"></dl>
+            <h3>Antigüedad del contenido</h3>
+            <div id="det-barra" class="det-barra" role="img" aria-label="Antigüedad del contenido"></div>
+            <ul id="det-tramos" class="det-tramos"></ul>
+            <h3>Subcarpetas más pesadas</h3>
+            <p id="det-sub-vacio" class="nota" hidden>No tiene subcarpetas.</p>
+            <ul id="det-subcarpetas" class="det-subs"></ul>
+            <div class="fila"><button id="btn-det-explorador" type="button" class="secundario">Mostrar en el Explorador</button></div>
+          </aside>
+        </div>
+        <div id="leyenda" class="leyenda" aria-label="Leyenda de colores">
+          <ul id="leyenda-estados" class="leyenda-estados"></ul>
+          <p id="leyenda-texto" class="nota"></p>
+        </div>
+      </div>
+
+      <!-- Pestaña Lista -->
+      <div id="panel-lista" role="tabpanel" aria-labelledby="tab-lista" hidden>
+        <h2 id="res-titulo" tabindex="-1">–</h2>
+        <div class="controles">
+          <div class="campo">
+            <label for="sel-minimo">Tamaño mínimo</label>
+            <select id="sel-minimo">
+              <option value="104857600">100 MB</option>
+              <option value="524288000">500 MB</option>
+              <option value="1073741824">1 GB</option>
+              <option value="5368709120">5 GB</option>
+              <option value="10737418240">10 GB</option>
+            </select>
+          </div>
+        </div>
+
+        <p id="aviso-omitidos" class="nota" hidden></p>
+        <p id="aviso-no-ofrecidas" class="nota" hidden></p>
+        <p id="vacio" class="vacio" hidden>No hay carpetas sin uso con estos filtros.</p>
+        <p id="vacio-creacion" class="nota" hidden>Si copiaste carpetas hace poco desde otro equipo o disco, su fecha de creación es reciente y cuenta como uso. Puedes desactivarlo en Opciones avanzadas.</p>
+        <ul id="lista" class="lista" aria-label="Carpetas sin uso"></ul>
+
+        <div class="fila acciones-pie">
+          <button id="btn-mover" type="button" disabled aria-describedby="txt-mover">Mover a disco externo…</button>
+          <span id="txt-mover" class="nota">Disponible en la próxima versión</span>
+        </div>
       </div>
     </section>
 
@@ -116,6 +175,23 @@
     </section>
   </div>
 
+  <!-- Menú contextual del mapa -->
+  <ul id="menu-contextual" class="menu" role="menu" aria-label="Opciones de la carpeta" hidden></ul>
+
+  <!-- Barra de selección (común a las dos pestañas) -->
+  <div id="barra-seleccion" class="barra-seleccion" role="region" aria-label="Selección" hidden>
+    <p id="sel-texto" class="sel-texto" role="status"></p>
+    <p id="sel-excluidas" class="nota" hidden></p>
+    <div class="fila">
+      <button id="btn-sel-copiar" type="button" disabled aria-describedby="txt-sel-proxima">Copiar…</button>
+      <button id="btn-sel-transferir" type="button" disabled aria-describedby="txt-sel-proxima">Transferir…</button>
+      <span id="txt-sel-proxima" class="nota">Disponible en la próxima versión</span>
+      <button id="btn-sel-limpiar" type="button" class="secundario">Limpiar selección</button>
+    </div>
+  </div>
+
+  <script src="../shared/activity.js"></script>
+  <script src="../shared/treemap.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

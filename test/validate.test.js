@@ -49,6 +49,27 @@ test('validateDriveLetter: una sola letra A–Z (sale en mayúscula)', () => {
   }
 });
 
+test('validateTreemapOptions: solo minBytes y maxCells, acotados', () => {
+  assert.deepEqual(V.validateTreemapOptions(undefined), {});
+  assert.deepEqual(V.validateTreemapOptions({}), {});
+  assert.deepEqual(V.validateTreemapOptions({ minBytes: 0, maxCells: 10 }), { minBytes: 0, maxCells: 10 });
+  assert.deepEqual(V.validateTreemapOptions({ minBytes: 10 * 1024 ** 4, maxCells: 200 }), { minBytes: 10 * 1024 ** 4, maxCells: 200 });
+  const malos = [null, [], 5, 'x', { minBytes: -1 }, { minBytes: 10 * 1024 ** 4 + 1 }, { minBytes: 1.5 }, { minBytes: '5' }, { maxCells: 9 }, { maxCells: 201 }, { maxCells: 20.5 }, { maxCells: null }, { otra: 1 }, { now: 5 }];
+  for (const malo of malos) assert.throws(() => V.validateTreemapOptions(malo), V.ValidationError, JSON.stringify(malo));
+});
+
+test('validatePathList: hasta 500 rutas absolutas', () => {
+  const abs = (i) => (process.platform === 'win32' ? `C:\\d${i}` : `/d${i}`);
+  assert.deepEqual(V.validatePathList([]), []);
+  assert.equal(V.validatePathList(Array.from({ length: 500 }, (_, i) => abs(i))).length, 500);
+  assert.throws(() => V.validatePathList(Array.from({ length: 501 }, (_, i) => abs(i))), V.ValidationError);
+  for (const malo of [null, undefined, 'x', {}, [1], [abs(1), 'relativa'], [abs(1), '/a/../b'], [abs(1), '/a\0b'], [[abs(1)]]]) {
+    assert.throws(() => V.validatePathList(malo), V.ValidationError, JSON.stringify(malo));
+  }
+  const dup = [abs(1), abs(1)];
+  assert.deepEqual(V.validatePathList(dup), dup, 'las repetidas se dejan pasar: el servicio las informa');
+});
+
 test('validateNoArgs: los canales sin datos rechazan cualquier argumento', () => {
   assert.doesNotThrow(() => V.validateNoArgs([]));
   assert.throws(() => V.validateNoArgs(['C:\\']), V.ValidationError);

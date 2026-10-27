@@ -17,6 +17,33 @@ Una carpeta está **sin uso** si **ningún archivo dentro** fue modificado, ni c
 - Fechas en 0 o inválidas no cuentan. Un archivo sin ninguna fecha válida deja el uso "desconocido", y lo desconocido nunca se ofrece como abandonado.
 - **Limitación:** si el usuario solo *lee* archivos (fotos, música, documentos de consulta) sin modificarlos, la app no puede saberlo. Por eso cada carpeta muestra su archivo más reciente y puede marcarse "Ignorar".
 
+## El mapa (Fase 2C)
+
+Dos pestañas: **Mapa** (la que se abre al terminar de escanear) y **Lista de candidatas**. El período "Sin uso desde hace" es el mismo para las dos.
+
+**Cuadros.** Cada subcarpeta de la carpeta actual es un cuadro; su área es proporcional a su tamaño (algoritmo *squarified treemap*, `src/shared/treemap.js`). Se muestran las carpetas de más de X (10 MB a 1 GB, por defecto 100 MB, se guarda en `mapMinBytes`). Lo que queda bajo el mínimo, o fuera del tope de celdas (80 por defecto), se agrupa en un cuadro "Otras"; los archivos sueltos de la carpeta forman otro cuadro. La suma de todos los cuadros es siempre el tamaño de la carpeta: no se pierde nada.
+
+**Colores por actividad** (`src/shared/activity.js`), según los días sin uso (D) frente al período elegido (P):
+
+| Estado | Condición | Color |
+|---|---|---|
+| Muy reciente | D ≤ P/3 | naranja |
+| Reciente | D ≤ P | amarillo |
+| Sin movimiento | D ≤ 2·P | azul |
+| Muy antigua | D > 2·P | plomo azulado oscuro |
+| Desconocido | sin fecha | gris claro |
+
+Cálidos = hubo movimiento reciente; fríos = no. Todos los pares de color de fondo y de texto cumplen contraste WCAG ≥ 4,5 (hay una prueba). **El color nunca va solo**: cada cuadro lleva texto ("Sin uso hace 1 año"), tiene nombre accesible, y la leyenda explica los cinco estados con sus límites.
+
+**Interacción.**
+- Clic o Enter en una carpeta con subcarpetas: **entra** a ella (migas de pan para volver; Retroceso sube un nivel). En una carpeta sin subcarpetas, el clic abre sus detalles.
+- Ctrl+clic o Espacio: marca/desmarca (borde grueso y ✓) sin entrar. La barra de selección inferior suma el espacio con `summarizeSelection` (sin contar dos veces una carpeta y algo dentro de ella, ni lo protegido). La selección se conserva al navegar y al cambiar de pestaña, y se limpia al escanear de nuevo.
+- Clic derecho, Shift+F10 o tecla Menú: menú con "Entrar a la carpeta", "Mostrar en el Explorador", "Ver detalles", "Copiar a otro disco…" y "Transferir a otro disco (mover)…" (**los dos últimos desactivados hasta la Fase 3**; si la carpeta está protegida, el motivo es "Protegida por el sistema") e "Ignorar esta carpeta". Flechas, Inicio/Fin, Esc.
+- Panel de detalles: tamaño, archivos, subcarpetas, último uso, archivo más reciente, avisos, reparto por antigüedad (con texto) y las 5 subcarpetas más pesadas.
+- Marcas en los cuadros: 🔒 protegida (borde discontinuo), ⚠ no se leyó todo, "enlaces" (la carpeta contiene accesos directos que no se siguen).
+
+Todo el cálculo (celdas, detalles, selección) lo hace el servicio en su hilo; la interfaz recibe resultados pequeños y solo manda rutas que el servicio reconoce.
+
 ## Decisiones técnicas
 
 | Decisión | Motivo |
@@ -28,6 +55,7 @@ Una carpeta está **sin uso** si **ningún archivo dentro** fue modificado, ni c
 | **Tamaño = `stat.size`** (tamaño real del archivo) | No es el "tamaño en disco" (clústeres, compresión NTFS, archivos dispersos, OneDrive "solo en la nube"), por lo que puede diferir de lo que muestra el Explorador. |
 | **No seguir enlaces simbólicos ni junctions** | Evita bucles y contar dos veces. Se registran como "omitidos". |
 | **Uso = modificación y creación (acceso opcional)** | Una sola definición (`useAccessTime`, `useCreationTime`) para todo el programa; ver "Qué significa sin uso". `atimeReliability` queda solo como información en opciones avanzadas. |
+| **Enlaces: se ofrece la carpeta, con aviso** | Una carpeta que contiene enlaces simbólicos o junctions sigue siendo candidata, pero se marca (`hasLinks`) y la interfaz avisa que los enlaces no se siguen ni se cuentan. |
 | **Carpetas, no archivos** | `findStaleFolders` devuelve la carpeta más alta que cumple, sin solapamientos y sin ofrecer nunca la carpeta escaneada. |
 | **Configuración en `settings.json`** (carpeta de datos del usuario) | Esquema validado, escritura atómica; un archivo dañado o de otra versión vuelve a los valores por defecto sin romper nada. |
 | **Carpetas ignoradas por el usuario** | Se guardan con la ruta que conoce el análisis; una carpeta con otra ignorada dentro no se ofrece entera. |
@@ -46,10 +74,12 @@ Una carpeta está **sin uso** si **ningún archivo dentro** fue modificado, ni c
 |---|---|---|
 | 1 | Núcleo de escaneo, reglas de análisis y protecciones (sin interfaz) | **Terminada** |
 | 2A | Correcciones, servicio de análisis en hilo aparte, esqueleto de Electron seguro y prueba automática en Windows | **Terminada** |
-| 2B | Detección de carpetas grandes sin uso, configuración, ignoradas, unidades y pantalla de lista | **En curso** (esta) |
-| 2C | Mapa visual de cuadros por tamaño, con color por antigüedad y selección con espacio total | Pendiente |
-| 3 | Copiar a disco externo/USB con verificación y, solo después, enviar a la papelera | Pendiente |
+| 2B | Detección de carpetas grandes sin uso, configuración, ignoradas, unidades y pantalla de lista | **Terminada** |
+| 2C | Mapa visual de cuadros por tamaño con color por actividad, pestañas, menú contextual, detalles y selección con espacio total | **En curso** (esta) |
+| 3 | Copiar/transferir a un disco externo o USB, **con verificación** y, solo después, enviar a la papelera. Ver notas más abajo. | Pendiente |
 | 4 | Instalador para Windows y publicación | Pendiente |
+
+Ideas futuras (sin fecha): escanear todas las unidades a la vez; un mapa con las subcarpetas anidadas dentro de cada cuadro.
 
 ## Estructura
 
@@ -70,3 +100,6 @@ Con 50 000 archivos (50 501 nodos), en Linux: ~358 bytes por nodo en memoria y ~
 
 - **Las protecciones se vuelven a comprobar justo antes de actuar**, no solo al listar: entre el escaneo y la acción el disco puede haber cambiado (un enlace nuevo, una carpeta renombrada).
 - **`isProtectedPath` no resuelve nombres cortos 8.3 dentro de la carpeta de usuario** (p. ej. `C:\Users\amir\DOCUME~1`). Hoy no es explotable porque el escáner entrega siempre nombres largos, pero la Fase 3 no debe aceptar rutas escritas a mano sin resolverlas antes.
+- **Copiar y transferir** (los botones del menú y de la barra de selección ya existen, desactivados): copiar primero, **verificar** lo copiado, y solo después enviar el original a la papelera.
+- **Copiar SIN seguir enlaces** (simbólicos ni junctions) y avisar cuáles hay: el escáner ya los marca (`hasLinks`) y no los cuenta en el tamaño.
+- **Archivos de OneDrive "solo en la nube":** su tamaño es el completo, y copiarlos los descarga. Hay que detectarlos y avisar antes de actuar.
