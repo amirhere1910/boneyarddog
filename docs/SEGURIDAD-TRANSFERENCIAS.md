@@ -54,9 +54,25 @@ Cada carpeta de origen es **independiente**: si una falla, las demás siguen su 
 - **Qué hace el Explorador de Windows** en el mismo caso (fuentes de terceros, no de Microsoft): muestra el aviso "este archivo es demasiado grande para la Papelera" y pregunta si se quiere eliminar de forma permanente ([ElevenForum](https://www.elevenforum.com/t/change-maximum-size-for-recycle-bin-in-windows-11.5109/), [Handy Recovery](https://www.handyrecovery.com/recover-files-too-large-for-recycle-bin/)). BoneYardDog **no hace esa pregunta ni ese borrado**.
 - **Cuota de la Papelera:** cada disco tiene un máximo (por omisión, **alrededor del 5 % del disco**; el usuario puede cambiarlo). No se puede leer sin permisos especiales, así que la app usa una **estimación conservadora**: si lo que se envía supera el 5 % del disco de origen, avisa que "puede no caber" y **rechaza la Papelera** salvo que se acepte el riesgo explícitamente.
 - **Discos extraíbles y de red:** no tienen Papelera. Se rechaza igual ("sin Papelera").
-- **Lo que NO hemos podido confirmar:** el comportamiento exacto de la versión instalada de Windows ante una carpeta que excede la cuota. Lo anterior sale del código fuente y de fuentes de terceros; la prueba en Windows real (`npm run smoke:transfer`) registra lo que ocurre en el caso normal, pero **no provoca** el caso de la cuota excedida (haría falta crear varios GB).
+- **Lo que NO hemos podido confirmar:** el comportamiento exacto de la versión instalada de Windows ante una carpeta que excede la cuota. Lo anterior sale del código fuente y de fuentes de terceros; la prueba en Windows real (`npm run smoke:transfer`, ver la sección siguiente) confirma el caso normal, pero **no provoca** el caso de la cuota excedida (haría falta crear varios GB).
 
 Si la Papelera no es adecuada, la alternativa es la **cuarentena**: la carpeta original se cambia de lugar dentro del mismo disco (instantáneo, sin límite de tamaño) a `BoneYardDog-Cuarentena\<lote>\…`, con un `LEEME.txt` que explica que se puede borrar desde el Explorador cuando el usuario lo decida. BoneYardDog **nunca ofrece** esa carpeta como candidata a copiar o mover (está protegida).
+
+## Observado en Windows real (runner `windows-latest`, 27 de octubre de 2026)
+
+Cada envío al repositorio ejecuta `npm run smoke:transfer` dentro de Electron, con la Papelera de verdad, y guarda todo lo observado en `smoke-artifacts/transferencia.json`. Lo que se vio en dos corridas:
+
+| Qué | Observación |
+|---|---|
+| Unidades | `C:` y `D:` son **NTFS** y de tipo **fijo**. PowerShell tardó **~1,3 s** en responder por cada unidad. |
+| Copia completa y rápida entre `D:` (origen) y `C:` (destino) | Ambas quedaron verificadas. Una comparación independiente (hecha por la prueba, no por el motor) confirmó **contenido idéntico** y origen intacto. La fecha de modificación coincidió exactamente. |
+| «Mover» con la Papelera real | `shell.trashItem` retiró el original: la ruta **ya no existía** y la copia estaba verificada e idéntica. En `D:\$Recycle.Bin` apareció la carpeta de usuario (`S-1-5-21-…-500`). **Sorpresa:** en una de las dos corridas `D:\$Recycle.Bin` **no existía** antes de la llamada (Windows la crea al usarla), así que su ausencia no significa que no haya Papelera. |
+| «Mover» con cuarentena | `fs.rename` movió el original a `D:\BoneYardDog-Cuarentena\<lote>\…`: original ausente de su sitio, contenido idéntico en la cuarentena y en la copia. |
+| Nombres con tildes, `ñ`, espacios y emoji | Copiados y verificados sin problema (incluida una carpeta vacía con `ñ`). |
+| Ruta larga | Una ruta de origen de **325** caracteres y de destino de **382** se copió y verificó bien. La revisión previa **avisó** de la ruta larga (el motor no la bloquea: es el Explorador quien falla desde 260). |
+| Cancelación | Con un archivo de 96 MB: `ESTADO.json` quedó en «cancelado», la Papelera **no** se llamó y el original quedó intacto. |
+
+**Lo que esta prueba NO provoca** (haría falta crear varios GB): una carpeta que exceda la cuota de la Papelera, ni discos extraíbles, FAT32, exFAT o una desconexión real. Eso está en [`PRUEBAS-MANUALES.md`](PRUEBAS-MANUALES.md).
 
 ## Qué NO garantiza (límites honestos)
 
