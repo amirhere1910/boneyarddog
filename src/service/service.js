@@ -111,6 +111,11 @@ class AnalysisService extends EventEmitter {
     return this._call('getChildren', folderPath, options);
   }
 
+  /** Nodo liviano de una ruta, o rechaza con RUTA_DESCONOCIDA si no está en el árbol. */
+  getNode(p) {
+    return this._call('getNode', p);
+  }
+
   getLargestFiles(n) {
     return this._call('getLargestFiles', n);
   }

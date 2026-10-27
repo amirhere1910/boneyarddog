@@ -521,3 +521,17 @@ test('getStaleFolders: setUsageOptions y un escaneo nuevo cambian los resultados
   assert.deepEqual(b.items.map((i) => i.name), ['x']);
   assert.ok(b.items[0].path.startsWith(otra));
 });
+
+test('getNode: confirma rutas del árbol y devuelve la ruta canónica; rechaza las demás', async (t) => {
+  const root = tmpDir(t);
+  buildFolders(root);
+  const svc = await newRealService(t);
+  await svc.startScan(root);
+  const node = await svc.getNode(path.join(root, 'padre', '..', 'vieja'));
+  assert.equal(node.path, path.join(root, 'vieja'));
+  assert.equal(node.type, 'folder');
+  assert.equal((await svc.getNode(path.join(root, 'nuevo.txt'))).type, 'file');
+  for (const mala of [path.join(root, '..'), path.join(root, 'no-existe'), '', '\0', 5, null]) {
+    await assert.rejects(() => svc.getNode(mala), { code: 'RUTA_DESCONOCIDA' }, String(mala));
+  }
+});

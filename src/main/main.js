@@ -12,26 +12,46 @@
  *  - La carpeta a escanear SOLO sale del diálogo del sistema.
  */
 
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { app, BrowserWindow, dialog, ipcMain, session, Menu } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, session, shell, Menu } = require('electron');
 
 const { AnalysisService } = require('../service/service');
 const V = require('./validate');
+const { SettingsStore, validatePatch } = require('./settings');
+const { listDrives } = require('./drives');
 
 const SMOKE = process.env.BYD_SMOKE === '1' && process.argv.includes('--smoke-test');
 const INDEX_PATH = path.join(__dirname, '..', 'renderer', 'index.html');
 const INDEX_URL = pathToFileURL(INDEX_PATH).href;
 
 if (SMOKE) {
-  // Solo en la prueba automática: los servidores de integración no tienen GPU.
+  // Solo en la prueba automática: los servidores de integración no tienen GPU, y la
+  // configuración va a una carpeta temporal para no tocar la del usuario.
   app.disableHardwareAcceleration();
+  app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'byd-smoke-userdata-')));
 }
 
-/** Estado interno. `smokeFolder` solo lo usa la prueba automática. */
-const context = { chosenFolder: null, smokeFolder: null };
+/**
+ * Estado interno. `smokeFolder` y `revealHook` solo los usa la prueba automática
+ * (en el uso normal siguen en null).
+ */
+const context = { chosenFolder: null, smokeFolder: null, revealHook: null };
 let mainWindow = null;
 let service = null;
+let settings = null;
+
+/** Único lugar donde se fija la carpeta a escanear: viene del diálogo o de una unidad que el principal reconoce. */
+function setChosenFolder(p) {
+  context.chosenFolder = V.validateAbsolutePath(p);
+  return { path: context.chosenFolder };
+}
+
+function usageFrom(s) {
+  return { useAccessTime: s.useAccessTime, useCreationTime: s.useCreationTime };
+}
 
 function lockDownSession(ses) {
   // La app no usa red: solo se permiten archivos locales.
@@ -106,8 +126,21 @@ function registerIpc() {
       if (result.canceled || result.filePaths.length === 0) return null;
       chosen = result.filePaths[0];
     }
-    context.chosenFolder = V.validateAbsolutePath(chosen);
-    return { path: context.chosenFolder };
+    return setChosenFolder(chosen);
+  });
+
+  handle(V.CHANNELS.listDrives, async (...args) => {
+    V.validateNoArgs(args);
+    return listDrives();
+  });
+
+  handle(V.CHANNELS.chooseDrive, async (letter, ...rest) => {
+    V.validateNoArgs(rest);
+    const wanted = V.validateDriveLetter(letter);
+    // El principal solo acepta letras que ÉL mismo detecta.
+    const drive = (await listDrives()).find((d) => d.letter === wanted);
+    if (!drive) throw new V.ValidationError(`La unidad ${wanted}: no está disponible`);
+    return setChosenFolder(drive.path);
   });
 
   handle(V.CHANNELS.startScan, async (...args) => {
@@ -119,6 +152,55 @@ function registerIpc() {
   handle(V.CHANNELS.cancelScan, async (...args) => {
     V.validateNoArgs(args);
     return service.cancel();
+  });
+
+  handle(V.CHANNELS.getSettings, async (...args) => {
+    V.validateNoArgs(args);
+    return settings.get();
+  });
+
+  handle(V.CHANNELS.saveSettings, async (patch, ...rest) => {
+    V.validateNoArgs(rest);
+    const valid = validatePatch(patch);
+    const before = settings.get();
+    const next = settings.update(valid);
+    if (before.useAccessTime !== next.useAccessTime || before.useCreationTime !== next.useCreationTime) {
+      await service.setUsageOptions(usageFrom(next));
+    }
+    return next;
+  });
+
+  handle(V.CHANNELS.staleFolders, async (...args) => {
+    V.validateNoArgs(args);
+    const s = settings.get();
+    return service.getStaleFolders({ olderThanDays: s.staleDays, minSizeBytes: s.minSizeBytes, excludedPaths: s.excludedPaths });
+  });
+
+  handle(V.CHANNELS.excludePath, async (p, ...rest) => {
+    V.validateNoArgs(rest);
+    V.validateAbsolutePath(p);
+    // La ruta debe existir en el árbol del servicio, y se guarda la ruta que ÉL conoce.
+    const node = await service.getNode(p);
+    if (node.type !== 'folder') throw new V.ValidationError('Solo se pueden ignorar carpetas');
+    const current = settings.get().excludedPaths;
+    return settings.update({ excludedPaths: current.includes(node.path) ? current : [...current, node.path] });
+  });
+
+  handle(V.CHANNELS.includePath, async (p, ...rest) => {
+    V.validateNoArgs(rest);
+    V.validateAbsolutePath(p);
+    const current = settings.get().excludedPaths;
+    if (!current.includes(p)) throw new V.ValidationError('Esa carpeta no está en la lista de ignoradas');
+    return settings.update({ excludedPaths: current.filter((x) => x !== p) });
+  });
+
+  handle(V.CHANNELS.reveal, async (p, ...rest) => {
+    V.validateNoArgs(rest);
+    V.validateAbsolutePath(p);
+    const node = await service.getNode(p); // solo rutas que el servicio confirma en su árbol
+    // Solo se muestra en el Explorador: nunca se abre ni se ejecuta nada.
+    (context.revealHook || shell.showItemInFolder)(node.path);
+    return { path: node.path };
   });
 
   handle(V.CHANNELS.largestFiles, async (n, ...rest) => {
@@ -137,7 +219,9 @@ async function start() {
   Menu.setApplicationMenu(null);
   lockDownSession(session.defaultSession);
 
+  settings = new SettingsStore(path.join(app.getPath('userData'), 'settings.json'));
   service = new AnalysisService();
+  await service.setUsageOptions(usageFrom(settings.get()));
   service.on('progress', (progress) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(V.CHANNELS.progress, progress);
   });
@@ -146,7 +230,7 @@ async function start() {
 
   if (SMOKE) {
     // Se carga solo en modo prueba: en el uso normal este código ni se lee.
-    require('./smoke').run({ app, win: mainWindow, context, service, indexUrl: INDEX_URL });
+    require('./smoke').run({ app, win: mainWindow, context, service, settings, indexUrl: INDEX_URL });
   }
 }
 

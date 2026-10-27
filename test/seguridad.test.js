@@ -52,7 +52,7 @@ test('los canales del preload coinciden con la lista oficial de validate.js', ()
 test('cada manejador IPC pasa por handle(): comprueba remitente y valida', () => {
   assert.equal((main.match(/ipcMain\.handle\(/g) || []).length, 1, 'ipcMain.handle solo dentro de handle()');
   assert.match(main, /if \(!trusted\(event\)\)/);
-  for (const channel of ['chooseFolder', 'startScan', 'cancelScan', 'largestFiles', 'largestFolders']) {
+  for (const channel of Object.keys(V.CHANNELS).filter((c) => c !== 'progress')) {
     assert.match(main, new RegExp(`handle\\(V\\.CHANNELS\\.${channel}`), channel);
   }
   assert.match(main, /validateNoArgs/);
@@ -60,11 +60,23 @@ test('cada manejador IPC pasa por handle(): comprueba remitente y valida', () =>
   assert.match(main, /validateAbsolutePath/);
 });
 
-test('la ruta a escanear solo viene del diálogo del sistema (el renderer no la manda)', () => {
-  // startScan no recibe la ruta: la toma del estado interno fijado por el diálogo.
+test('la ruta a escanear solo viene del diálogo o de una unidad que el principal reconoce', () => {
+  // startScan no recibe la ruta: la toma del estado interno.
   assert.match(main, /handle\(V\.CHANNELS\.startScan, async \(\.\.\.args\) => \{\s*V\.validateNoArgs\(args\)/);
   assert.match(main, /service\.startScan\(context\.chosenFolder\)/);
   assert.match(preload, /startScan: \(\) =>/);
+  // Ese estado se fija en UN solo lugar, desde el diálogo o desde una unidad detectada.
+  assert.equal((main.match(/context\.chosenFolder\s*=/g) || []).length, 1);
+  assert.match(main, /setChosenFolder\(chosen\)/);
+  assert.match(main, /setChosenFolder\(drive\.path\)/);
+  assert.match(main, /\(await listDrives\(\)\)\.find\(\(d\) => d\.letter === wanted\)/);
+  assert.equal((main.match(/setChosenFolder\(/g) || []).length, 3, 'definición + diálogo + unidad');
+});
+
+test('"Mostrar en el Explorador" y "Ignorar" solo aceptan rutas que el servicio confirma', () => {
+  assert.match(main, /handle\(V\.CHANNELS\.reveal[\s\S]*?await service\.getNode\(p\)[\s\S]*?showItemInFolder/);
+  assert.match(main, /handle\(V\.CHANNELS\.excludePath[\s\S]*?await service\.getNode\(p\)/);
+  assert.doesNotMatch(main, /shell\.openPath|shell\.openExternal|child_process|\bexec(Sync|File)?\(|\bspawn\(/, 'nunca abre ni ejecuta archivos');
 });
 
 test('el código de la prueba automática solo se carga con BYD_SMOKE=1 y --smoke-test', () => {

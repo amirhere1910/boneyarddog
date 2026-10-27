@@ -182,6 +182,13 @@ const handlers = {
     };
   },
 
+  /** Confirma que la ruta está en el árbol propio y devuelve su nodo liviano (con la ruta canónica del árbol). */
+  async getNode(p) {
+    const node = findNode(p);
+    if (!node) throw unknownPath(p);
+    return toLight(node);
+  },
+
   async getLargestFiles(n) {
     checkCount(n);
     return analysis.topLargestFiles(requireTree(), n).map((f) => toLight(f));

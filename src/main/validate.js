@@ -16,6 +16,14 @@ const CHANNELS = Object.freeze({
   cancelScan: 'byd:cancel-scan',
   largestFiles: 'byd:largest-files',
   largestFolders: 'byd:largest-folders',
+  getSettings: 'byd:get-settings',
+  saveSettings: 'byd:save-settings',
+  staleFolders: 'byd:stale-folders',
+  excludePath: 'byd:exclude-path',
+  includePath: 'byd:include-path',
+  listDrives: 'byd:list-drives',
+  chooseDrive: 'byd:choose-drive',
+  reveal: 'byd:reveal',
   progress: 'byd:progress',
 });
 
@@ -46,6 +54,12 @@ function validateAbsolutePath(p) {
   if (!path.isAbsolute(p)) throw new ValidationError('La ruta debe ser absoluta');
   if (p.split(/[\\/]+/).includes('..')) throw new ValidationError('La ruta no puede contener ".."');
   return p;
+}
+
+/** Una sola letra de unidad (A–Z). Devuelve la letra en mayúscula. */
+function validateDriveLetter(l) {
+  if (typeof l !== 'string' || !/^[A-Za-z]$/.test(l)) throw new ValidationError('La unidad debe ser una sola letra (A–Z)');
+  return l.toUpperCase();
 }
 
 /** Los canales que no reciben datos deben llamarse sin argumentos. */
@@ -98,6 +112,7 @@ module.exports = {
   ValidationError,
   validateCount,
   validateAbsolutePath,
+  validateDriveLetter,
   validateNoArgs,
   isTrustedSender,
   sameFileUrl,
