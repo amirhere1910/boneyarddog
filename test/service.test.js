@@ -760,3 +760,30 @@ test('getDetails: la marca de enlaces llega también a las celdas del mapa y a l
   assert.equal(cells.find((c) => c.name === 'afuera').hasLinks, false);
   assert.equal((await svc.getDetails(path.join(root, 'arriba', 'medio'))).hasLinks, true);
 });
+
+test('getTreemap: una carpeta de tamaño EXACTAMENTE igual a minBytes sí tiene celda propia (y una de un byte menos, no)', async (t) => {
+  const root = tmpDir(t);
+  put(root, 'justa/f.bin', 1000, 30);
+  put(root, 'casi/f.bin', 999, 30);
+  put(root, 'mas/f.bin', 1001, 30);
+  const svc = await newRealService(t);
+  await svc.startScan(root);
+  const r = await svc.getTreemap(root, { minBytes: 1000 });
+  const folders = r.cells.filter((c) => c.kind === 'folder').map((c) => c.name).sort();
+  assert.deepEqual(folders, ['justa', 'mas']);
+  const others = r.cells.find((c) => c.kind === 'others');
+  assert.equal(others.bytes, 999);
+  assert.equal(sumCells(r), r.totalBytes);
+});
+
+test('getTreemap: maxCells por defecto es 40 (con "Otras" dentro del tope)', async (t) => {
+  const root = tmpDir(t);
+  for (let i = 0; i < 60; i++) put(root, `c${String(i).padStart(2, '0')}/f.bin`, 2000 + i, 30);
+  const svc = await newRealService(t);
+  await svc.startScan(root);
+  const r = await svc.getTreemap(root, { minBytes: 0 });
+  assert.equal(r.cells.length, 40);
+  assert.equal(r.cells[39].kind, 'others');
+  assert.equal(r.cells[39].count, 60 - 39);
+  assert.equal(sumCells(r), r.totalBytes);
+});

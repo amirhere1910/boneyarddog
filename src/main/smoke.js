@@ -104,6 +104,23 @@ function buildFixture(app) {
   };
 }
 
+/** Muchas carpetas diminutas junto a una enorme: deben plegarse en "Otras" (no ser cuadros enfocables). */
+function buildTinyFixture(base) {
+  const root = fs.mkdtempSync(path.join(base, 'pequenas-'));
+  write(path.join(root, 'grande', 'g.bin'), 1_500_000, 40);
+  for (let i = 1; i <= 12; i++) write(path.join(root, `mini${String(i).padStart(2, '0')}`, 'm.bin'), 1000, 40); // = mapMinBytes: tienen celda propia
+  return root;
+}
+
+/** 505 carpetas viejas (candidatas) y 3 recientes más grandes que solo se ven en el mapa. */
+function buildManyFixture(base) {
+  const root = fs.mkdtempSync(path.join(base, 'muchas-'));
+  for (let i = 0; i < 505; i++) write(path.join(root, `n${String(i).padStart(3, '0')}`, 'f.bin'), 1000, 400);
+  for (let i = 1; i <= 3; i++) write(path.join(root, `Reciente${i}`, 'r.bin'), 5000, 1);
+  write(path.join(root, 'nuevo.txt'), 5, 1);
+  return root;
+}
+
 /** Antes de abrir la ventana: carpetas de ejemplo y configuración de prueba. */
 async function prepare({ app, settings, service }) {
   const fixture = buildFixture(app);
@@ -135,6 +152,10 @@ const READ_WINDOW = `(() => {
     panelListaVisible: !hidden('panel-lista'),
     calculandoVisible: !hidden('calculando') || document.getElementById('mapa-estado').hidden === false,
     mensaje: hidden('mensaje') ? '' : text('mensaje'),
+    vista: (() => {
+      const rect = (id) => { const e = document.getElementById(id); if (!e || e.hidden) return null; const r = e.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height, bottom: r.bottom, top: r.top }; };
+      return { alto: window.innerHeight, ancho: window.innerWidth, contenedor: rect('mapa-contenedor'), leyenda: rect('leyenda'), barra: rect('barra-seleccion'), scrollY: window.scrollY, altoDocumento: document.documentElement.scrollHeight };
+    })(),
     mapa: {
       rect: { x: map.x, y: map.y, w: map.width, h: map.height },
       carpeta: document.body.dataset.mapaCarpeta || '',
@@ -145,6 +166,8 @@ const READ_WINDOW = `(() => {
         const st = b.dataset.estado;
         return {
           tipo: b.dataset.kind,
+          etiqueta: b.tagName,
+          plegadas: Number(b.dataset.plegadas || 0),
           ruta: b.dataset.ruta || '',
           nombre: b.dataset.nombre || '',
           aria: b.getAttribute('aria-label'),
@@ -429,8 +452,11 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
           if (ox > 0.5 && oy > 0.5) overlapping.push([a.nombre, b.nombre]);
         });
       });
-      check('mapa: los cuadros caben en el área y no se solapan', inside && overlapping.length === 0, { inside, overlapping });
-      check('mapa: alto mínimo de 360 px', m.rect.h >= 360, m.rect);
+      check('mapa: los cuadros caben en el área y no se solapan', inside && overlapping.length === 0, { inside, overlapping, area: m.rect, fuera: m.celdas.filter((c) => !(c.rect.x >= m.rect.x - 1 && c.rect.y >= m.rect.y - 1 && c.rect.x + c.rect.w <= m.rect.x + m.rect.w + 1 && c.rect.y + c.rect.h <= m.rect.y + m.rect.h + 1)).map((c) => [c.nombre, c.rect]) });
+      check('mapa: alto mínimo de 240 px', m.rect.h >= 240, m.rect);
+      const v0 = map0.vista;
+      check('mapa a pantalla completa: el mapa y la leyenda están dentro de la ventana, sin desplazar la página', v0.contenedor.bottom <= v0.alto && v0.leyenda.bottom <= v0.alto && v0.leyenda.top >= v0.contenedor.bottom - 1 && v0.altoDocumento <= v0.alto + 1, v0);
+      check('mapa: todos los cuadros son botones visibles (ninguno diminuto)', m.celdas.every((c) => c.etiqueta === 'BUTTON' && Math.min(c.rect.w, c.rect.h) >= 20 && c.rect.w * c.rect.h >= 500), m.celdas.map((c) => [c.nombre, c.rect.w, c.rect.h]));
       check('mapa: leyenda con los 5 estados y la frase del período', m.leyenda.length === 5 && m.leyendaTexto.startsWith('Movimiento reciente = archivos modificados o copiados en los últimos 3 meses.') && m.leyendaTexto.includes('La fecha de acceso se ignora.'), { leyenda: m.leyenda, texto: m.leyendaTexto });
       check('mapa: migas de pan con la carpeta actual', m.migas.length === 1 && m.migas[0].actual && m.migas[0].ruta === fixture.root, m.migas);
       check('mapa: selector de tamaño del mapa guardado en la configuración de prueba', Number(m.mapaMin) === 1000, m.mapaMin);
@@ -464,6 +490,7 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
       await clickCell(P.vacaciones, { modifiers: ['control'] });
       const selOne = await waitFor((s) => s.seleccion.visible && s.seleccion.cantidad === 1 && s.seleccion.bytes === 6000, 'selección de vacaciones');
       check('Ctrl+clic marca la carpeta (✓) sin entrar y la barra suma su tamaño', cellOf(selOne, P.vacaciones).seleccionada && selOne.mapa.carpeta === P.videos && /1 carpeta seleccionada · /.test(selOne.seleccion.texto), selOne.seleccion);
+      check('con la barra de selección, la leyenda y el mapa siguen a la vista y no se tapan', selOne.vista.barra && selOne.vista.barra.bottom <= selOne.vista.alto && selOne.vista.leyenda.bottom <= selOne.vista.barra.top + 1 && selOne.vista.contenedor.bottom <= selOne.vista.leyenda.top + 1, selOne.vista);
       check('barra de selección: "Copiar…" y "Transferir…" desactivados con "Disponible en la próxima versión"', selOne.seleccion.copiarDeshabilitado && selOne.seleccion.transferirDeshabilitado && selOne.seleccion.proxima === 'Disponible en la próxima versión', selOne.seleccion);
 
       await js(`document.querySelector('#migas button').click()`);
@@ -601,9 +628,47 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
       const back2 = await settled((s) => s.ignoradas.length === 0 && s.lista.items.some((i) => i.nombre === 'Fotos'), 'volver a considerar');
       check('"Volver a considerar" la devuelve y se quita de la configuración', savedSettings().excludedPaths.length === 0 && back2.lista.items.some((i) => i.nombre === 'Fotos'), savedSettings().excludedPaths);
 
+      check('sin mensajes de error durante el recorrido principal', (await read()).mensaje === '', (await read()).mensaje);
+
+      // --- Cuadros diminutos: se pliegan en "Otras" y no reciben foco ---------------------------------------
+      const tinyRoot = buildTinyFixture(fixture.base);
+      await js("document.getElementById('btn-nuevo').click()");
+      await waitFor((s) => s.estado === 'inicio', 'volver al inicio');
+      context.smokeFolder = tinyRoot;
+      await js("document.getElementById('btn-elegir').click()");
+      const tiny = await settled((s) => s.mapa.carpeta === tinyRoot && s.mapa.celdas.length > 0, 'el mapa con carpetas diminutas');
+      const buttons = tiny.mapa.celdas.filter((c) => c.etiqueta === 'BUTTON');
+      const tinyOthers = tiny.mapa.celdas.find((c) => c.tipo === 'others');
+      check('cuadros diminutos: ningún cuadro dibujado como botón es menor de 20 px de lado ni de 500 px²', buttons.length > 0 && buttons.every((c) => Math.min(c.rect.w, c.rect.h) >= 20 && c.rect.w * c.rect.h >= 500), buttons.map((c) => [c.nombre, Math.round(c.rect.w), Math.round(c.rect.h)]));
+      check('cuadros diminutos: se sumaron a "Otras" (12 carpetas, sin perder bytes)', tinyOthers && tinyOthers.plegadas === 12 && tinyOthers.bytes === 12000 && tiny.mapa.celdas.reduce((sum, c) => sum + c.bytes, 0) === 1_500_000 + 12_000, tinyOthers && { plegadas: tinyOthers.plegadas, bytes: tinyOthers.bytes });
+      check('cuadros diminutos: el aviso dice cuántas son, cuánto suman y cómo verlas', /«Otras» agrupa 12 carpetas pequeñas que suman 11,7 KB/.test(tiny.mapa.aviso) && tiny.mapa.aviso.includes('entra a la carpeta') && tiny.mapa.aviso.includes('baja el tamaño mínimo'), tiny.mapa.aviso);
+      const focusable = await js(`[...document.querySelectorAll('#mapa button, #mapa [tabindex]')].map((e) => { const r = e.getBoundingClientRect(); return Math.min(r.width, r.height); })`);
+      check('ningún cuadro invisible puede recibir foco', focusable.length === buttons.length && focusable.every((side) => side >= 20), focusable);
+
+      // --- Tope de 500 en la selección: se avisa y NO se pierde lo marcado ------------------------------------
+      const manyRoot = buildManyFixture(fixture.base);
+      await js("document.getElementById('btn-nuevo').click()");
+      await waitFor((s) => s.estado === 'inicio', 'volver al inicio (2)');
+      context.smokeFolder = manyRoot;
+      await js("document.getElementById('btn-elegir').click()");
+      await settled((s) => s.mapa.carpeta === manyRoot && s.mapa.celdas.length > 0, 'el mapa con muchas carpetas');
+      await js("document.getElementById('tab-lista').click()");
+      const manyList = await settled((s) => s.pestana === 'lista' && s.lista.items.length === 500, 'la lista con 500 carpetas');
+      check('lista: 505 candidatas, se muestran 500 (tope de la lista)', manyList.lista.titulo.cantidad === 505 && manyList.lista.items.length === 500, manyList.lista.titulo);
+      await js("document.querySelectorAll('#lista .chk-sel').forEach((c) => c.click())");
+      const full = await waitFor((s) => s.seleccion.visible && s.seleccion.cantidad === 500 && s.seleccion.bytes === 500 * 1000, 'las 500 marcadas');
+      check('500 carpetas marcadas: la barra suma 500 × 1000 bytes', full.seleccion.cantidad === 500 && full.seleccion.bytes === 500000, full.seleccion);
+      await js("document.getElementById('tab-mapa').click()");
+      await settled((s) => s.pestana === 'mapa', 'volver al mapa');
+      await clickCell(path.join(manyRoot, 'Reciente1'), { modifiers: ['control'] });
+      await sleep(400);
+      const over = await read();
+      check('la carpeta 501 se rechaza con "Máximo 500 carpetas por operación"', /Máximo 500 carpetas por operación/.test(over.mensaje), over.mensaje);
+      check('la selección NO se pierde: sigue visible con 500 carpetas', over.seleccion.visible && over.seleccion.cantidad === 500 && over.seleccion.bytes === 500000, over.seleccion);
+      check('la carpeta 501 no quedó marcada', !cellOf(over, path.join(manyRoot, 'Reciente1')).seleccionada, null);
+
       const finalSettings = savedSettings();
       check('settings.json con el esquema esperado', finalSettings.version === 1 && finalSettings.staleDays === 90 && finalSettings.minSizeBytes === 1000 && finalSettings.mapMinBytes === 1000, finalSettings);
-      check('sin mensajes de error al final', (await read()).mensaje === '', (await read()).mensaje);
 
       await finish(report.checks.every((c) => c.ok) ? 0 : 1);
     } catch (err) {

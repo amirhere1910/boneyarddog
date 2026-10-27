@@ -8,7 +8,7 @@
 (() => {
   const byd = window.byd;
   const { activityState, PALETTE, LABELS, STATES } = window.BYDActivity;
-  const { layout } = window.BYDTreemap;
+  const { layoutFolded } = window.BYDTreemap;
   const $ = (id) => document.getElementById(id);
   const nf = new Intl.NumberFormat('es');
 
@@ -374,7 +374,17 @@
 
   // ---------------------------------------------------------------- selección
 
+  const MAX_SELECTION = 500;
+
   function setSelected(p, name, on) {
+    if (on && !state.selection.has(p) && state.selection.size >= MAX_SELECTION) {
+      // Sin perder lo ya marcado: solo se rechaza la que sobra.
+      const msg = `Máximo ${MAX_SELECTION} carpetas por operación. Quita alguna para agregar otra.`;
+      showMessage(msg);
+      setActionNote(msg);
+      refreshSelectionMarks();
+      return;
+    }
     if (on) state.selection.set(p, name);
     else state.selection.delete(p);
     refreshSelectionMarks();
@@ -429,10 +439,9 @@
     const res = await byd.summarizeSelection(paths);
     if (mine !== state.selToken) return;
     if (!res.ok) {
-      showMessage(`No se pudo calcular la selección: ${res.error}`);
-      state.selection.clear();
-      refreshSelectionMarks();
-      bar.hidden = true;
+      // La selección NO se borra: solo se avisa que no se pudo calcular el total.
+      showMessage(`No se pudo calcular el total de la selección: ${res.error}`);
+      $('sel-texto').textContent = `${plural(paths.length, 'carpeta seleccionada', 'carpetas seleccionadas')} · no se pudo calcular el total`;
       return;
     }
     const r = res.value;
@@ -504,7 +513,7 @@
 
   let lastRender = null; // { data, width, height, period }: evita redibujar lo que no cambió
 
-  function renderMap() {
+  function renderMap(pass = 1, carriedFocus = null) {
     const data = state.map.data;
     const box = $('mapa');
     if (!data || state.tab !== 'mapa') {
@@ -522,28 +531,62 @@
 
     // Si el foco estaba en un cuadro, vuelve al mismo cuadro del dibujo nuevo (teclado).
     const active = document.activeElement;
-    const keepFocus = active && box.contains(active) ? active.dataset.indice : null;
+    const keepFocus = pass === 1 ? (active && box.contains(active) ? active.dataset.indice : null) : carriedFocus;
     box.replaceChildren();
     $('mapa-aviso').hidden = true;
 
     const noFolders = !data.cells.some((c) => c.kind === 'folder');
-    const aviso = $('mapa-aviso');
-    if (noFolders) {
-      aviso.hidden = false;
-      aviso.textContent = `No hay carpetas de más de ${formatBytes(state.settings.mapMinBytes)} aquí. Baja el tamaño mínimo para verlas.`;
-    }
 
     const P = periodDays();
-    const rects = layout(data.cells.map((c, i) => ({ id: String(i), size: c.size })), width, height, MAP_OPTION);
-    const byId = new Map(rects.map((r) => [r.id, r]));
+    // Cuadros demasiado chicos (< 20 px de lado o < 500 px²) no se dibujan como botón:
+    // se suman al cuadro "Otras" y el mapa se vuelve a calcular con ellos juntos.
+    const othersIndex = data.cells.findIndex((c) => c.kind === 'others');
+    const OTHERS = othersIndex >= 0 ? String(othersIndex) : 'extra';
+    const folding = layoutFolded(
+      data.cells.map((c, i) => ({ id: String(i), size: c.size, foldable: c.kind !== 'others' })),
+      width,
+      height,
+      { ...MAP_OPTION, minSide: 20, minArea: 500, othersId: OTHERS },
+    );
+    const foldedCells = folding.folded.map((id) => data.cells[Number(id)]);
+    const cells = data.cells.map((c, i) => ({ cell: c, id: String(i) })).filter((x) => !folding.folded.includes(x.id));
+    if (foldedCells.length > 0) {
+      const base = othersIndex >= 0 ? data.cells[othersIndex] : null;
+      const parts = base ? foldedCells.concat([base]) : foldedCells;
+      const bytes = parts.reduce((sum, c) => sum + c.size, 0);
+      const dated = parts.filter((c) => c.daysUnused !== null);
+      const merged = {
+        kind: 'others',
+        name: 'Otras',
+        size: bytes,
+        bytes,
+        count: (base ? base.count : 0) + foldedCells.filter((c) => c.kind === 'folder').length,
+        looseFiles: (base ? base.looseFiles : 0) + foldedCells.filter((c) => c.kind === 'files').reduce((sum, c) => sum + c.fileCount, 0),
+        fileCount: parts.reduce((sum, c) => sum + c.fileCount, 0),
+        lastUsedMs: parts.reduce((m, c) => (Number.isFinite(c.lastUsedMs) && (m === null || c.lastUsedMs > m) ? c.lastUsedMs : m), null),
+        daysUnused: dated.length ? Math.min(...dated.map((c) => c.daysUnused)) : null,
+        protected: false,
+        hasLinks: parts.some((c) => c.hasLinks),
+        unreadable: parts.some((c) => c.unreadable),
+        canEnter: false,
+        foldedCount: foldedCells.length,
+      };
+      const at = cells.findIndex((x) => x.id === OTHERS);
+      if (at >= 0) cells[at] = { cell: merged, id: OTHERS };
+      else cells.push({ cell: merged, id: OTHERS });
+    }
+    const byId = new Map(folding.rects.map((r) => [r.id, r]));
     const total = data.folder.size || 1;
 
-    data.cells.forEach((c, i) => {
-      const r = byId.get(String(i));
+    cells.forEach(({ cell: c, id }) => {
+      const r = byId.get(id);
       if (!r) return; // tamaño 0: no hay nada que dibujar
       const st = activityState(c.daysUnused, P);
-      const b = el('button', 'celda');
-      b.type = 'button';
+      const tiny = Math.min(r.w, r.h) < 20 || r.w * r.h < 500;
+      // Un cuadro invisible nunca recibe foco: si "Otras" quedó diminuto, se dibuja sin botón.
+      const b = el(tiny ? 'div' : 'button', 'celda');
+      if (!tiny) b.type = 'button';
+      else b.setAttribute('aria-hidden', 'true');
       b.style.left = `${r.x}px`;
       b.style.top = `${r.y}px`;
       b.style.width = `${r.w}px`;
@@ -553,16 +596,17 @@
       b.dataset.estado = st;
       b.dataset.kind = c.kind;
       b.dataset.bytes = String(c.size);
-      b.dataset.indice = String(i);
+      b.dataset.indice = id;
       b.dataset.nombre = c.name;
       b.dataset.protegida = c.protected ? '1' : '0';
+      if (c.foldedCount) b.dataset.plegadas = String(c.foldedCount);
       if (c.daysUnused !== null) b.dataset.dias = String(c.daysUnused);
       if (c.kind === 'folder') {
         b.dataset.ruta = c.path;
         b.setAttribute('aria-pressed', state.selection.has(c.path) ? 'true' : 'false');
         b.dataset.seleccionada = state.selection.has(c.path) ? '1' : '0';
       }
-      b.setAttribute('aria-label', cellAria(c, st));
+      if (!tiny) b.setAttribute('aria-label', cellAria(c, st));
 
       if (r.w >= 56 && r.h >= 24) b.append(el('span', 'celda-nombre', cellTitle(c)));
       if (r.w >= 70 && r.h >= 40) b.append(el('span', 'celda-tam', formatBytes(c.size)));
@@ -578,18 +622,39 @@
         b.append(m);
       }
 
-      b.addEventListener('click', (e) => onCellClick(e, c));
-      b.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        openMenu(b, c, e.clientX, e.clientY);
-      });
-      b.addEventListener('keydown', (e) => onCellKey(e, b, c));
+      if (!tiny) {
+        b.addEventListener('click', (e) => onCellClick(e, c));
+        b.addEventListener('contextmenu', (e) => {
+          e.preventDefault();
+          openMenu(b, c, e.clientX, e.clientY);
+        });
+        b.addEventListener('keydown', (e) => onCellKey(e, b, c));
+        b.addEventListener('focus', () => showTip(b, c, total, st));
+        b.addEventListener('blur', hideTip);
+      }
       b.addEventListener('mouseenter', () => showTip(b, c, total, st));
       b.addEventListener('mouseleave', hideTip);
-      b.addEventListener('focus', () => showTip(b, c, total, st));
-      b.addEventListener('blur', hideTip);
       box.append(b);
     });
+
+    // Aviso de lo que quedó agrupado en "Otras" y cómo verlo.
+    const othersCell = cells.map((x) => x.cell).find((c) => c.kind === 'others');
+    const note = $('mapa-aviso');
+    const lines = [];
+    if (noFolders) lines.push(`No hay carpetas de más de ${formatBytes(state.settings.mapMinBytes)} aquí. Baja el tamaño mínimo para verlas.`);
+    if (othersCell) {
+      const what = othersCell.count > 0 ? plural(othersCell.count, 'carpeta pequeña', 'carpetas pequeñas') : plural(othersCell.looseFiles, 'archivo suelto pequeño', 'archivos sueltos pequeños');
+      lines.push(`«Otras» agrupa ${what} que suman ${formatBytes(othersCell.bytes)}. Para verlas, entra a la carpeta que las contiene o baja el tamaño mínimo.`);
+    }
+    note.hidden = lines.length === 0;
+    note.textContent = lines.join(' ');
+
+    // El aviso ocupa espacio: si cambió el alto o el ancho disponible, se dibuja otra vez con el tamaño final.
+    if (pass < 3 && (box.clientHeight !== height || box.clientWidth !== width)) {
+      lastRender = null;
+      renderMap(pass + 1, keepFocus);
+      return;
+    }
 
     if (keepFocus !== null && keepFocus !== undefined) {
       const again = box.querySelector(`.celda[data-indice="${keepFocus}"]`);
@@ -680,7 +745,7 @@
     if (c.path) lines.push(['p', c.path]);
     lines.push(['p', `${formatBytes(c.size)} · ${total > 0 ? Math.round((c.size / total) * 1000) / 10 : 0} % de esta carpeta`]);
     lines.push(['p', c.daysUnused === null ? 'Último uso: sin fecha' : `Último uso: ${formatUnused(c.daysUnused)} (${formatDate(c.lastUsedMs)}) · ${stateText(st)}`]);
-    if (c.kind === 'others') lines.push(['p', 'Para verlas en el mapa, baja el tamaño mínimo con «Mostrar carpetas de más de».']);
+    if (c.kind === 'others') lines.push(['p', 'Para verlas, entra a la carpeta que las contiene o baja el tamaño mínimo con «Mostrar carpetas de más de».']);
     if (c.protected) lines.push(['p', '🔒 Protegida por el sistema.']);
     if (c.unreadable) lines.push(['p', '⚠ Contiene partes que no se pudieron leer.']);
     if (c.hasLinks) lines.push(['p', 'Contiene enlaces (no se siguen).']);

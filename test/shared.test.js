@@ -3,7 +3,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { STATES, LABELS, PALETTE, activityState } = require('../src/shared/activity');
-const { layout } = require('../src/shared/treemap');
+const { layout, layoutFolded } = require('../src/shared/treemap');
 
 // --- activity.js -----------------------------------------------------------------
 
@@ -180,4 +180,81 @@ test('treemap: áreas o márgenes degenerados no producen valores negativos ni N
   for (const r of tiny) assert.ok(r.w >= 0 && r.h >= 0 && Number.isFinite(r.x + r.y + r.w + r.h));
   const rects = layout(sizes(10), 300, 200, { gap: 50 });
   for (const r of rects) assert.ok(r.w >= 0 && r.h >= 0);
+});
+
+// --- Calidad del algoritmo (1d) ------------------------------------------------
+
+function mulberry32(seed) {
+  let a = seed;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+test('treemap: razón de aspecto media < 1,8 con 20 elementos aleatorios (semilla fija, 300 repeticiones)', () => {
+  const rand = mulberry32(12345);
+  let sum = 0;
+  for (let k = 0; k < 300; k++) {
+    const items = Array.from({ length: 20 }, (_, i) => ({ id: `i${i}`, size: 1 + rand() * 99 }));
+    const rects = layout(items, 900, 600);
+    sum += rects.reduce((s, r) => s + aspect(r), 0) / rects.length;
+  }
+  const mean = sum / 300;
+  assert.ok(mean < 1.8, `razón de aspecto media ${mean.toFixed(3)}`);
+});
+
+// --- Cuadros diminutos (1a) --------------------------------------------------------
+
+const f = (id, size) => ({ id, size, foldable: true });
+
+test('layoutFolded: cuadros de menos de 20 px o 500 px² se pliegan en "Otras" y se vuelve a dibujar', () => {
+  const items = [f('a', 5000), f('b', 3000), f('c', 2000), ...Array.from({ length: 40 }, (_, i) => f(`m${i}`, 1))];
+  const r = layoutFolded(items, 600, 400, { gap: 2 });
+  assert.ok(r.folded.length >= 40, `se plegaron ${r.folded.length}`);
+  for (const rect of r.rects) {
+    if (rect.id === 'others') continue;
+    assert.ok(Math.min(rect.w, rect.h) >= 20 && rect.w * rect.h >= 500, `${rect.id}: ${rect.w}x${rect.h}`);
+  }
+  const others = r.items.find((it) => it.id === 'others');
+  assert.equal(others.size, r.folded.length, 'lo plegado se suma, nada se pierde');
+  assert.equal(r.items.reduce((s, it) => s + it.size, 0), 10000 + 40, 'la suma total no cambia');
+});
+
+test('layoutFolded: suma a la celda "Otras" que ya existía y no pliega las grandes', () => {
+  const items = [f('a', 5000), f('b', 4000), { id: 'others', size: 100, foldable: false }, f('t', 2)];
+  const r = layoutFolded(items, 600, 400);
+  assert.deepEqual(r.folded, ['t']);
+  assert.equal(r.items.find((it) => it.id === 'others').size, 102);
+  assert.ok(r.rects.some((x) => x.id === 'a') && r.rects.some((x) => x.id === 'b'));
+});
+
+test('layoutFolded: sin cuadros diminutos no cambia nada; los no plegables se respetan', () => {
+  const items = [f('a', 50), f('b', 50)];
+  const r = layoutFolded(items, 600, 400);
+  assert.deepEqual(r.folded, []);
+  assert.deepEqual(r.rects, layout(items, 600, 400));
+  const fixed = layoutFolded([f('a', 100000), { id: 'x', size: 1, foldable: false }], 600, 400);
+  assert.deepEqual(fixed.folded, [], 'un cuadro no plegable no se pliega aunque sea diminuto');
+});
+
+test('layoutFolded: simulación de un disco de 1 TB (78 carpetas de más de 100 MB): ningún cuadro dibujado es diminuto', () => {
+  const rand = mulberry32(7);
+  const items = Array.from({ length: 78 }, (_, i) => f(`c${i}`, 100 + Math.floor(rand() ** 6 * 400000)));
+  const r = layoutFolded(items, 900, 560);
+  const drawn = r.rects.filter((x) => x.id !== 'others');
+  assert.ok(drawn.length >= 5 && drawn.length < 78);
+  for (const rect of drawn) assert.ok(Math.min(rect.w, rect.h) >= 20 && rect.w * rect.h >= 500);
+  assert.equal(r.items.reduce((s, it) => s + it.size, 0), items.reduce((s, it) => s + it.size, 0));
+});
+
+test('layoutFolded: entradas degeneradas', () => {
+  assert.deepEqual(layoutFolded([], 600, 400), { rects: [], folded: [], items: [] });
+  assert.deepEqual(layoutFolded(null, 600, 400).rects, []);
+  assert.deepEqual(layoutFolded([f('a', 0)], 600, 400).rects, []);
+  const tinyArea = layoutFolded([f('a', 1), f('b', 1)], 30, 20);
+  for (const rect of tinyArea.rects) assert.ok(Number.isFinite(rect.w + rect.h));
 });

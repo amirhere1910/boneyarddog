@@ -288,7 +288,7 @@ const handlers = {
     const o = options === null || typeof options !== 'object' || Array.isArray(options) ? null : options;
     if (!o) throw new TypeError('Las opciones deben ser un objeto');
     const minBytes = o.minBytes === undefined ? DEFAULT_MAP_MIN_BYTES : o.minBytes;
-    const maxCells = o.maxCells === undefined ? 80 : o.maxCells;
+    const maxCells = o.maxCells === undefined ? 40 : o.maxCells;
     if (!Number.isInteger(minBytes) || minBytes < 0 || minBytes > MAX_MIN_BYTES) throw new RangeError('minBytes debe ser un entero entre 0 y 10 TB');
     if (!Number.isInteger(maxCells) || maxCells < 10 || maxCells > 200) throw new RangeError('maxCells debe ser un entero entre 10 y 200');
     if (o.now !== undefined && !Number.isFinite(o.now)) throw new RangeError('now debe ser un número');
