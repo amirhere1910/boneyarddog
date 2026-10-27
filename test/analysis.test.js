@@ -50,6 +50,9 @@ const NOW = Date.UTC(2025, 0, 1);
 // Las carpetas temporales reales pueden estar dentro de AppData (Windows), que está
 // protegida. Las pruebas con archivos reales inyectan "nada protegido".
 const NO_PROT = () => false;
+// Con archivos reales la fecha de creación es siempre "ahora" (no se puede retrasar):
+// estas pruebas la desactivan y la lógica de creación se prueba con árboles sintéticos.
+const REAL = { isProtected: NO_PROT, useCreationTime: false };
 const daysAgo = (d) => NOW - d * DAY_MS;
 
 function allNodes(node, out = []) {
@@ -144,13 +147,13 @@ test('topLargestFolders: la raíz no cuenta y los casos vacíos devuelven []', (
 
 // --- lastUsedDate -----------------------------------------------------------
 
-test('lastUsedDate: archivo = el más reciente entre atime y mtime', () => {
-  assert.equal(lastUsedDate(file('/r/a', 1, { atime: 100, mtime: 500 })), 500);
-  assert.equal(lastUsedDate(file('/r/a', 1, { atime: 900, mtime: 500 })), 900);
-});
-
-test('lastUsedDate: ignoreAtime usa solo mtime', () => {
-  assert.equal(lastUsedDate(file('/r/a', 1, { atime: 900, mtime: 500 }), { ignoreAtime: true }), 500);
+test('lastUsedDate: archivo = el más reciente entre mtime, creación y (si se pide) atime', () => {
+  const f = file('/r/a', 1, { atime: 900, mtime: 500, birth: 700 });
+  assert.equal(lastUsedDate(f), 700, 'por defecto: mtime y creación; el acceso se ignora');
+  assert.equal(lastUsedDate(f, { useAccessTime: true }), 900);
+  assert.equal(lastUsedDate(f, { useCreationTime: false }), 500);
+  assert.equal(lastUsedDate(f, { useAccessTime: true, useCreationTime: false }), 900);
+  assert.equal(lastUsedDate(file('/r/a', 1, { atime: 100, mtime: 500 }), { useAccessTime: true }), 500);
 });
 
 test('lastUsedDate: carpeta = lo más reciente de todo su contenido (a cualquier profundidad)', () => {
@@ -158,12 +161,13 @@ test('lastUsedDate: carpeta = lo más reciente de todo su contenido (a cualquier
     file('/r/a', 1, { atime: 10, mtime: 20 }),
     folder('/r/d', [folder('/r/d/e', [file('/r/d/e/f', 1, { atime: 700, mtime: 30 })])]),
   ]);
-  assert.equal(lastUsedDate(tree), 700);
+  assert.equal(lastUsedDate(tree, { useAccessTime: true }), 700);
+  assert.equal(lastUsedDate(tree), 30, 'sin contar el acceso, lo más reciente es el mtime de f');
 });
 
 test('lastUsedDate: el atime propio de una carpeta se ignora; vacía usa su mtime', () => {
   const conContenido = folder('/r', [file('/r/a', 1, { atime: 10, mtime: 20 })], { atime: 99999, mtime: 88888 });
-  assert.equal(lastUsedDate(conContenido), 20, 'ni el atime ni el mtime de la carpeta pesan si hay contenido');
+  assert.equal(lastUsedDate(conContenido, { useAccessTime: true }), 20, 'ni el atime ni el mtime de la carpeta pesan si hay contenido');
   const vacia = folder('/r/v', [], { atime: 99999, mtime: 55 });
   assert.equal(lastUsedDate(vacia), 55);
 });
@@ -209,7 +213,7 @@ async function sampleStaleTree(t) {
 
 test('findStale: carpeta abandonada sale como UNA entrada; la que tiene un archivo reciente se desglosa', async (t) => {
   const { root, tree } = await sampleStaleTree(t);
-  const { items, totalBytes } = findStale(tree, { olderThanDays: 365, minSizeBytes: 100, now: NOW, isProtected: NO_PROT });
+  const { items, totalBytes } = findStale(tree, { olderThanDays: 365, minSizeBytes: 100, now: NOW, ...REAL });
 
   // Orden: por tamaño, de mayor a menor.
   assert.deepEqual(
@@ -226,15 +230,15 @@ test('findStale: carpeta abandonada sale como UNA entrada; la que tiene un archi
 
 test('findStale: minSizeBytes descarta lo pequeño; sin mínimo aparece todo lo viejo', async (t) => {
   const { root, tree } = await sampleStaleTree(t);
-  const sinMinimo = findStale(tree, { olderThanDays: 365, now: NOW, isProtected: NO_PROT });
+  const sinMinimo = findStale(tree, { olderThanDays: 365, now: NOW, ...REAL });
   assert.ok(sinMinimo.items.some((i) => i.path === path.join(root, 'mixta', 'viejo_chico.bin')));
-  const conMinimo = findStale(tree, { olderThanDays: 365, minSizeBytes: 100, now: NOW, isProtected: NO_PROT });
+  const conMinimo = findStale(tree, { olderThanDays: 365, minSizeBytes: 100, now: NOW, ...REAL });
   assert.ok(!conMinimo.items.some((i) => i.path.endsWith('viejo_chico.bin')));
 });
 
 test('findStale: las entradas nunca se solapan (no hay padre e hijo a la vez)', async (t) => {
   const { tree } = await sampleStaleTree(t);
-  const { items } = findStale(tree, { olderThanDays: 30, now: NOW, isProtected: NO_PROT });
+  const { items } = findStale(tree, { olderThanDays: 30, now: NOW, ...REAL });
   for (const a of items) {
     for (const b of items) {
       if (a === b) continue;
@@ -248,18 +252,82 @@ test('findStale: si TODO está abandonado, la raíz sale como una sola entrada',
   put(root, 'x/a.bin', 10, { atimeDaysAgo: 900 });
   put(root, 'y.bin', 10, { atimeDaysAgo: 900 });
   const { tree } = await scan(root);
-  const { items } = findStale(tree, { olderThanDays: 365, now: NOW, isProtected: NO_PROT });
+  const { items } = findStale(tree, { olderThanDays: 365, now: NOW, ...REAL });
   assert.equal(items.length, 1);
   assert.equal(items[0].path, root);
 });
 
-test('findStale: usa la fecha más reciente entre atime y mtime, y ignoreAtime la cambia', async (t) => {
+test('(a) mtime de hace 800 días y atime de hace 3: sin uso por defecto; con useAccessTime, en uso', async (t) => {
   const root = tmpDir(t);
-  // Leído hace 2 días, pero modificado hace 3 años.
-  put(root, 'leido.bin', 50, { atimeDaysAgo: 2, mtimeDaysAgo: 1100 });
+  const full = path.join(root, 'leido.bin');
+  fs.writeFileSync(full, Buffer.alloc(50, 1));
+  fs.utimesSync(full, new Date(daysAgo(3)), new Date(daysAgo(800))); // (atime, mtime)
+  put(root, 'nuevo.txt', 5, { atimeDaysAgo: 1 }); // evita que la raíz entera sea una sola entrada
   const { tree } = await scan(root);
-  assert.equal(findStale(tree, { olderThanDays: 365, now: NOW, isProtected: NO_PROT }).items.length, 0);
-  assert.equal(findStale(tree, { olderThanDays: 365, now: NOW, ignoreAtime: true, isProtected: NO_PROT }).items.length, 1);
+  const porDefecto = findStale(tree, { olderThanDays: 365, now: NOW, ...REAL });
+  assert.deepEqual(porDefecto.items.map((i) => path.basename(i.path)), ['leido.bin']);
+  assert.equal(porDefecto.items[0].daysUnused, 800);
+  const conAcceso = findStale(tree, { olderThanDays: 365, now: NOW, ...REAL, useAccessTime: true });
+  assert.equal(conAcceso.items.length, 0);
+});
+
+test('(b) mtime viejo y creación de hace 2 días (carpeta restaurada de un respaldo): en uso por defecto', () => {
+  const restaurada = folder('/r/restaurada', [
+    file('/r/restaurada/a.bin', 10, { atime: daysAgo(900), mtime: daysAgo(900), birth: daysAgo(2) }),
+    file('/r/restaurada/b.bin', 10, { atime: daysAgo(900), mtime: daysAgo(900), birth: daysAgo(2) }),
+  ]);
+  const vieja = folder('/r/vieja', [file('/r/vieja/c.bin', 10, { atime: daysAgo(900), mtime: daysAgo(900), birth: daysAgo(900) })]);
+  const tree = folder('/r', [restaurada, vieja, file('/r/nuevo', 1, { atime: daysAgo(1), mtime: daysAgo(1), birth: daysAgo(1) })]);
+
+  const def = findStale(tree, { olderThanDays: 365, now: NOW, isProtected: NO_PROT });
+  assert.deepEqual(def.items.map((i) => i.path), ['/r/vieja'], 'la restaurada está en uso');
+  const sinCreacion = findStale(tree, { olderThanDays: 365, now: NOW, isProtected: NO_PROT, useCreationTime: false });
+  assert.deepEqual(sinCreacion.items.map((i) => i.path).sort(), ['/r/restaurada', '/r/vieja']);
+  assert.equal(lastUsedDate(restaurada), daysAgo(2));
+  assert.equal(lastUsedDate(restaurada, { useCreationTime: false }), daysAgo(900));
+});
+
+test('(c) una carpeta con un solo archivo reciente entre miles viejos está en uso', () => {
+  const old = { atime: daysAgo(900), mtime: daysAgo(900) };
+  const hijos = Array.from({ length: 3000 }, (_, i) => file(`/r/gran/f${i}`, 10, old));
+  hijos.push(file('/r/gran/reciente.txt', 1, { atime: daysAgo(900), mtime: daysAgo(5) }));
+  const gran = folder('/r/gran', hijos);
+  assert.equal(lastUsedDate(gran), daysAgo(5));
+  const tree = folder('/r', [gran, file('/r/nuevo', 1, { atime: daysAgo(1), mtime: daysAgo(1) })]);
+  const { items } = findStale(tree, { olderThanDays: 90, now: NOW, isProtected: NO_PROT });
+  assert.ok(!items.some((i) => i.path === '/r/gran'), 'la carpeta no sale entera');
+  assert.equal(items.length, 3000, 'los archivos viejos salen sueltos (findStale es el detector de archivos)');
+});
+
+test('(d) carpeta vacía vieja: su fecha es su mtime', () => {
+  const vacia = folder('/r/vacia', [], { atime: daysAgo(1), mtime: daysAgo(700) });
+  assert.equal(lastUsedDate(vacia), daysAgo(700));
+  assert.equal(lastUsedDate(vacia, { useAccessTime: true }), daysAgo(700), 'su atime propio nunca cuenta');
+  const tree = folder('/r', [vacia, file('/r/nuevo', 1, { atime: daysAgo(1), mtime: daysAgo(1) })]);
+  assert.deepEqual(findStale(tree, { olderThanDays: 365, now: NOW, isProtected: NO_PROT }).items.map((i) => i.path), ['/r/vacia']);
+});
+
+test('(e) fechas inválidas o en 0 no cuentan como uso y nunca se ofrecen como abandonadas', () => {
+  const malas = [0, -5, NaN, Infinity, -Infinity, undefined, null, '1700000000000'];
+  for (const mala of malas) {
+    const f = { ...file('/r/a', 10), atimeMs: mala, mtimeMs: mala, birthtimeMs: mala };
+    assert.equal(lastUsedDate(f, { useAccessTime: true }), null, String(mala));
+  }
+  // Una fecha válida compensa a las inválidas.
+  assert.equal(lastUsedDate({ ...file('/r/a', 1), mtimeMs: 0, atimeMs: NaN, birthtimeMs: daysAgo(40) }), daysAgo(40));
+  assert.equal(lastUsedDate({ ...file('/r/a', 1), mtimeMs: daysAgo(40), atimeMs: -1, birthtimeMs: 0 }, { useAccessTime: true }), daysAgo(40));
+
+  const sinFechas = { ...file('/r/carpeta/sin', 10), name: 'sin', atimeMs: 0, mtimeMs: 0, birthtimeMs: 0 };
+  const viejo = file('/r/carpeta/viejo', 10, { mtime: daysAgo(900) });
+  const mezcla = folder('/r/carpeta', [sinFechas, viejo]);
+  assert.equal(lastUsedDate(mezcla), daysAgo(900), 'el archivo sin fechas no ensucia la carpeta');
+
+  // Sin fechas válidas el uso es desconocido, y lo desconocido nunca se ofrece como abandonado.
+  const tree = folder('/r', [mezcla, file('/r/nuevo', 1, { mtime: daysAgo(1) })]);
+  const { items } = findStale(tree, { olderThanDays: 365, now: NOW, isProtected: NO_PROT });
+  assert.deepEqual(items.map((i) => i.path), ['/r/carpeta']);
+  const soloSin = folder('/r', [{ ...sinFechas, path: '/r/sin' }, file('/r/nuevo', 1, { mtime: daysAgo(1) })]);
+  assert.deepEqual(findStale(soloSin, { olderThanDays: 365, now: NOW, isProtected: NO_PROT }).items, []);
 });
 
 test('findStale: el límite es "más de N días" (exactamente N no cuenta)', () => {
@@ -604,7 +672,7 @@ test('escáner + análisis: una subcarpeta sin permisos hace "partial" al padre 
   const viejo = tree.children.find((c) => c.name === 'viejo');
   const locked = viejo.children.find((c) => c.name === 'locked');
   assert.equal(locked.incomplete, true);
-  const { items } = findStale(tree, { olderThanDays: 365, now: NOW, isProtected: NO_PROT });
+  const { items } = findStale(tree, { olderThanDays: 365, now: NOW, ...REAL });
   assert.ok(!items.some((i) => i.path === viejo.path));
 });
 
@@ -645,7 +713,7 @@ test('escáner: un archivo que falla por EPERM deja al padre inmediato como part
   assert.equal(get('viejo').partial, true);
   assert.equal(get('otro').partial, undefined, 'desaparecer durante el escaneo no cuenta como no leído');
   assert.equal(tree.partial, undefined, 'solo el padre inmediato');
-  const { items, notOffered } = findStale(tree, { olderThanDays: 365, now: NOW, isProtected: NO_PROT });
+  const { items, notOffered } = findStale(tree, { olderThanDays: 365, now: NOW, ...REAL });
   assert.ok(!items.some((i) => i.path === get('viejo').path));
   assert.ok(notOffered.some((n) => n.path === get('viejo').path && n.reason === 'contiene-no-leidos'));
 });

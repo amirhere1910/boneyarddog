@@ -102,6 +102,11 @@ class AnalysisService extends EventEmitter {
     return this._call('cancel');
   }
 
+  /** Cambia qué cuenta como "uso": { useAccessTime, useCreationTime }. Devuelve las opciones vigentes. */
+  setUsageOptions(options) {
+    return this._call('setUsageOptions', options);
+  }
+
   getChildren(folderPath, options) {
     return this._call('getChildren', folderPath, options);
   }

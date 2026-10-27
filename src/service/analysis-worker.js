@@ -26,6 +26,9 @@ let rootPath = null;
 let summary = null;
 let scanSeq = 0;
 let current = null; // { seq, controller }
+// Opciones de "uso" vigentes (ver analysis.js). UNA sola fuente de verdad: las
+// fechas que se muestran (lastUsedMs) y los cálculos (daysUnused, sin uso) las usan siempre.
+let usage = analysis.normalizeUsage();
 
 class ServiceError extends Error {
   constructor(message, code) {
@@ -112,7 +115,7 @@ const handlers = {
     current = null;
     if (res.cancelled) return { cancelled: true, replaced: false, stats: res.stats };
 
-    if (res.tree) analysis.annotateLastUsed(res.tree);
+    if (res.tree) analysis.annotateLastUsed(res.tree, usage);
     tree = res.tree;
     rootPath = path.resolve(p);
     summary = {
@@ -125,6 +128,19 @@ const handlers = {
       atimeReliability: analysis.atimeReliability(res.tree),
     };
     return summary;
+  },
+
+  /** Cambia qué cuenta como uso y vuelve a anotar todo el árbol (un recorrido lineal). */
+  async setUsageOptions(options) {
+    if (options === null || typeof options !== 'object' || Array.isArray(options)) {
+      throw new TypeError('Las opciones de uso deben ser un objeto');
+    }
+    for (const key of ['useAccessTime', 'useCreationTime']) {
+      if (key in options && typeof options[key] !== 'boolean') throw new TypeError(`${key} debe ser verdadero o falso`);
+    }
+    usage = analysis.normalizeUsage({ ...usage, ...options });
+    if (tree) analysis.annotateLastUsed(tree, usage);
+    return { ...usage };
   },
 
   async cancel() {
@@ -167,10 +183,10 @@ const handlers = {
   },
 
   async getStale(options = {}) {
-    const { olderThanDays, minSizeBytes = 0, ignoreAtime = false, now } = options || {};
+    const { olderThanDays, minSizeBytes = 0, now } = options || {};
     if (!Number.isFinite(olderThanDays) || olderThanDays < 0) throw new RangeError('olderThanDays debe ser un número >= 0');
     if (!Number.isFinite(minSizeBytes) || minSizeBytes < 0) throw new RangeError('minSizeBytes debe ser un número >= 0');
-    const opts = { olderThanDays, minSizeBytes, ignoreAtime: ignoreAtime === true };
+    const opts = { olderThanDays, minSizeBytes, ...usage };
     if (now !== undefined) {
       if (!Number.isFinite(now)) throw new RangeError('now debe ser un número');
       opts.now = now;

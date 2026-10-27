@@ -41,6 +41,13 @@ function newService(t, options) {
   return svc;
 }
 
+/** Servicio para pruebas con archivos REALES: su fecha de creación es "ahora" y no se puede retrasar. */
+async function newRealService(t, options) {
+  const svc = newService(t, options);
+  await svc.setUsageOptions({ useCreationTime: false });
+  return svc;
+}
+
 /** Árbol de ejemplo: ~60 archivos con tamaños y fechas variadas. */
 function buildSample(root) {
   for (let i = 0; i < 20; i++) put(root, `fotos/f${i}.jpg`, 1000 + i * 10, 800 + i);
@@ -54,7 +61,7 @@ function buildSample(root) {
 test('resultados del servicio = análisis directo sobre el mismo árbol', async (t) => {
   const root = tmpDir(t);
   buildSample(root);
-  const svc = newService(t);
+  const svc = await newRealService(t);
 
   const summary = await svc.startScan(root);
   const direct = await scan(root);
@@ -73,7 +80,7 @@ test('resultados del servicio = análisis directo sobre el mismo árbol', async 
   assert.deepEqual(folders.map((f) => f.path), analysis.topLargestFolders(direct.tree, 3).map((f) => f.path));
 
   const stale = await svc.getStale({ olderThanDays: 365, minSizeBytes: 100 });
-  const directStale = analysis.findStale(direct.tree, { olderThanDays: 365, minSizeBytes: 100 });
+  const directStale = analysis.findStale(direct.tree, { olderThanDays: 365, minSizeBytes: 100, useCreationTime: false });
   assert.deepEqual(stale.items.map((i) => i.path), directStale.items.map((i) => i.path));
   assert.equal(stale.totalBytes, directStale.totalBytes);
   assert.equal(stale.count, directStale.items.length);
@@ -97,7 +104,7 @@ test('resultados del servicio = análisis directo sobre el mismo árbol', async 
 test('getChildren: nodos livianos, orden, paginación y bandera de protegido', async (t) => {
   const root = tmpDir(t);
   buildSample(root);
-  const svc = newService(t);
+  const svc = await newRealService(t);
   await svc.startScan(root);
 
   const page = await svc.getChildren(root, { sortBy: 'size', limit: 3 });
@@ -265,7 +272,7 @@ test('getStale: máximo 1000 entradas, con truncated y totales completos', async
   const root = tmpDir(t);
   for (let i = 0; i < 1100; i++) put(root, `viejo-${String(i).padStart(4, '0')}.bin`, 10, 800);
   put(root, 'reciente.txt', 1, 0); // evita que la carpeta entera se ofrezca como una sola entrada
-  const svc = newService(t);
+  const svc = await newRealService(t);
   await svc.startScan(root);
   const stale = await svc.getStale({ olderThanDays: 365 });
   assert.equal(stale.items.length, 1000);
@@ -279,7 +286,7 @@ test('getStale informa los no ofrecidos por motivo', async (t) => {
   const root = tmpDir(t);
   put(root, 'a/viejo.bin', 100, 900);
   put(root, 'nuevo.txt', 1, 0);
-  const svc = newService(t);
+  const svc = await newRealService(t);
   await svc.startScan(root);
   // Raíz de prueba con solo el archivo viejo y uno nuevo: nada protegido ni ilegible.
   const stale = await svc.getStale({ olderThanDays: 365 });
@@ -327,4 +334,54 @@ test('close() rechaza lo pendiente y termina el hilo', async (t) => {
   await new Promise((r) => svc.once('progress', r));
   await svc.close();
   await assert.rejects(() => scanning, /se cerró|terminó/);
+});
+
+test('1b: fechas coherentes: daysUnused y lastUsedMs nunca se contradicen (mtime hace 800 días, atime hace 3)', async (t) => {
+  const root = tmpDir(t);
+  const f = path.join(root, 'leido.bin');
+  fs.writeFileSync(f, Buffer.alloc(100, 1));
+  fs.utimesSync(f, new Date(Date.now() - 3 * DAY), new Date(Date.now() - 800 * DAY)); // (atime, mtime)
+  put(root, 'nuevo.txt', 5, 0);
+  const svc = await newRealService(t);
+  await svc.startScan(root);
+
+  const dias = (ms) => (Date.now() - ms) / DAY;
+  const coherente = (item) => assert.ok(Math.abs(dias(item.lastUsedMs) - item.daysUnused) < 1.01, `${item.daysUnused} días vs lastUsedMs de hace ${dias(item.lastUsedMs)}`);
+
+  // Por defecto el acceso se ignora: en ambos lados son ~800 días.
+  const stale = await svc.getStale({ olderThanDays: 365 });
+  assert.deepEqual(stale.items.map((i) => i.name), ['leido.bin']);
+  assert.ok(stale.items[0].daysUnused >= 799);
+  coherente(stale.items[0]);
+  const hijo = (await svc.getChildren(root)).items.find((i) => i.name === 'leido.bin');
+  assert.ok(Math.abs(dias(hijo.lastUsedMs) - 800) < 1.01);
+
+  // Con el acceso contando: en uso (3 días) en ambos lados, sin contradicción.
+  assert.deepEqual(await svc.setUsageOptions({ useAccessTime: true }), { useAccessTime: true, useCreationTime: false });
+  assert.equal((await svc.getStale({ olderThanDays: 365 })).items.length, 0);
+  const hijo2 = (await svc.getChildren(root)).items.find((i) => i.name === 'leido.bin');
+  assert.ok(Math.abs(dias(hijo2.lastUsedMs) - 3) < 1.01, 'lastUsedMs se re-anotó con las mismas opciones');
+  const stale3 = await svc.getStale({ olderThanDays: 1 });
+  for (const item of stale3.items) coherente(item);
+
+  // Volver atrás.
+  await svc.setUsageOptions({ useAccessTime: false });
+  const otra = await svc.getStale({ olderThanDays: 365 });
+  assert.equal(otra.items.length, 1);
+  coherente(otra.items[0]);
+});
+
+test('setUsageOptions: valida lo que recibe y vale para escaneos nuevos', async (t) => {
+  const root = tmpDir(t);
+  put(root, 'a.bin', 5, 0);
+  const svc = newService(t);
+  await assert.rejects(() => svc.setUsageOptions(null), TypeError);
+  await assert.rejects(() => svc.setUsageOptions([]), TypeError);
+  await assert.rejects(() => svc.setUsageOptions({ useAccessTime: 'si' }), TypeError);
+  assert.deepEqual(await svc.setUsageOptions({}), { useAccessTime: false, useCreationTime: true });
+  assert.deepEqual(await svc.setUsageOptions({ useCreationTime: false }), { useAccessTime: false, useCreationTime: false });
+  await svc.startScan(root); // sin árbol previo: las opciones siguen vigentes
+  const hijo = (await svc.getChildren(root)).items[0];
+  assert.ok(Math.abs(hijo.lastUsedMs - Date.now()) < 60_000);
+  assert.deepEqual(await svc.setUsageOptions({ useAccessTime: true }), { useAccessTime: true, useCreationTime: false });
 });
