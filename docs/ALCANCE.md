@@ -70,3 +70,5 @@ Con 50 000 archivos (50 501 nodos), en Linux: ~358 bytes por nodo en memoria y ~
 
 - **Las protecciones se vuelven a comprobar justo antes de actuar**, no solo al listar: entre el escaneo y la acción el disco puede haber cambiado (un enlace nuevo, una carpeta renombrada).
 - **`isProtectedPath` no resuelve nombres cortos 8.3 dentro de la carpeta de usuario** (p. ej. `C:\Users\amir\DOCUME~1`). Hoy no es explotable porque el escáner entrega siempre nombres largos, pero la Fase 3 no debe aceptar rutas escritas a mano sin resolverlas antes.
+- **Copiar SIN seguir enlaces** (simbólicos ni junctions) y avisar cuáles hay: el escáner ya los marca (`hasLinks`) y no los cuenta en el tamaño.
+- **Archivos de OneDrive "solo en la nube":** su tamaño es el completo, y copiarlos los descarga. Hay que detectarlos y avisar antes de actuar.

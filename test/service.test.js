@@ -416,7 +416,7 @@ test('getStaleFolders: igual que el análisis directo, con campos livianos y new
   assert.equal(got.notOfferedCount, want.notOffered.length);
   assert.deepEqual(got.items.map((i) => i.name).sort(), ['canción ñandú 🐕', 'padre', 'vieja'].sort());
   for (const item of got.items) {
-    assert.deepEqual(Object.keys(item).sort(), ['daysUnused', 'fileCount', 'hasChildren', 'lastUsedMs', 'name', 'newestFile', 'path', 'protected', 'size', 'type']);
+    assert.deepEqual(Object.keys(item).sort(), ['daysUnused', 'fileCount', 'hasChildren', 'hasLinks', 'lastUsedMs', 'name', 'newestFile', 'path', 'protected', 'size', 'type']);
     assert.equal(item.type, 'folder');
     assert.ok(item.newestFile && item.newestFile.name && item.newestFile.ms === item.lastUsedMs);
   }

@@ -257,7 +257,7 @@ const handlers = {
     const { items, notOffered, totalBytes } = analysis.findStaleFolders(root, { ...params, ...usage });
     const value = {
       items: items.slice(0, MAX_FOLDERS).map((i) =>
-        toLight(i.node, { lastUsedMs: i.lastUsedMs, daysUnused: i.daysUnused, newestFile: i.newestFile }),
+        toLight(i.node, { lastUsedMs: i.lastUsedMs, daysUnused: i.daysUnused, newestFile: i.newestFile, hasLinks: i.hasLinks }),
       ),
       count: items.length,
       truncated: items.length > MAX_FOLDERS,

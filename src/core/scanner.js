@@ -14,6 +14,7 @@
  *     fileCount,     // archivos contenidos (un archivo cuenta como 1)
  *     children,      // solo en carpetas
  *     incomplete,    // solo en carpetas cuya lista no se pudo leer
+ *     hasLinks,      // solo en carpetas con un enlace simbólico/junction directo (no se sigue)
  *     partial        // solo en carpetas con un hijo directo que no se pudo leer
  *   }               // (permisos, tipo especial u otro error; no cuenta que
  *                   // el hijo haya desaparecido ni que sea un enlace)
@@ -96,6 +97,7 @@ async function scan(rootPath, options = {}) {
   const limit = createLimiter(concurrency);
   const skipped = [];
   const unreadable = new Set(); // rutas que fallaron de forma que deja al padre incompleto
+  const links = new Set(); // enlaces omitidos (se avisa en la carpeta que los contiene)
   let filesSeen = 0;
   let foldersSeen = 0;
   let bytes = 0;
@@ -144,6 +146,7 @@ async function scan(rootPath, options = {}) {
         kind: 'symlink',
         reason: 'Enlace simbólico o punto de reanálisis (junction): no se sigue',
       });
+      links.add(p);
       return null;
     }
     if (st.isDirectory()) return scanDir(p, name, st);
@@ -197,6 +200,7 @@ async function scan(rootPath, options = {}) {
       node.fileCount += child.fileCount;
     }
     if (names.some((n) => unreadable.has(path.join(p, n)))) node.partial = true;
+    if (names.some((n) => links.has(path.join(p, n)))) node.hasLinks = true;
     node.children.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     return node;
   }

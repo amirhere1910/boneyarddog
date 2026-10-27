@@ -30,8 +30,6 @@ const BRIDGE_KEYS = [
   'chooseDrive',
   'chooseFolder',
   'excludePath',
-  'getLargestFiles',
-  'getLargestFolders',
   'getSettings',
   'getStaleFolders',
   'includePath',

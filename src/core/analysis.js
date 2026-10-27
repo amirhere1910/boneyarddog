@@ -146,6 +146,7 @@ function lastUsedDate(node, options) {
  *  - fullyProtected: el nodo y TODO lo que contiene está protegido
  *  - subtreeIncomplete: el nodo o algo dentro tiene `incomplete` (no se pudo
  *    leer su lista), `partial` (un hijo no se pudo leer) o no trae datos
+ *  - subtreeHasLinks: el nodo o algo dentro tiene `hasLinks` (un enlace no seguido)
  *  - noData: carpeta sin la lista `children`
  */
 function computeInfo(node, isProtected, usage, memo) {
@@ -158,6 +159,7 @@ function computeInfo(node, isProtected, usage, memo) {
   // Carpeta sin lista de hijos (p. ej. copiada entre procesos): no hay datos.
   const noData = !isFile(node) && !Array.isArray(node.children);
   let subtreeIncomplete = noData || Boolean(node.incomplete) || Boolean(node.partial);
+  let subtreeHasLinks = Boolean(node.hasLinks);
   if (isFile(node)) {
     lastUsed = fileLastUsed(node, usage);
   } else if (noData) {
@@ -172,10 +174,11 @@ function computeInfo(node, isProtected, usage, memo) {
       if (info.subtreeProtected) subtreeProtected = true;
       if (!info.fullyProtected) fullyProtected = false;
       if (info.subtreeIncomplete) subtreeIncomplete = true;
+      if (info.subtreeHasLinks) subtreeHasLinks = true;
     }
     lastUsed = maxFinite(dates);
   }
-  const info = { lastUsed, selfProtected, subtreeProtected, fullyProtected, subtreeIncomplete, noData };
+  const info = { lastUsed, selfProtected, subtreeProtected, fullyProtected, subtreeIncomplete, subtreeHasLinks, noData };
   memo.set(node, info);
   return info;
 }
@@ -322,6 +325,9 @@ const DEFAULT_MIN_FOLDER_BYTES = 500 * 1024 * 1024; // 500 MB
  *                             moverla entera arrastraría la ignorada
  *    `notOffered` solo recoge lo que habría sido candidato (sin uso y con el
  *    tamaño mínimo).
+ *  - Una carpeta que contiene enlaces (`hasLinks`, a cualquier profundidad) SÍ se
+ *    ofrece, pero con esa marca para que la interfaz avise: los enlaces no se
+ *    siguen ni se cuentan.
  *  - Cada resultado trae `newestFile`: el archivo cuya fecha determina el
  *    último uso, para que el usuario entienda por qué la carpeta se considera
  *    sin uso (null en carpetas vacías). Se calcula solo para los resultados.
@@ -410,6 +416,7 @@ function findStaleFolders(tree, opts = {}) {
         fileCount: node.fileCount,
         lastUsedMs: info.lastUsed,
         daysUnused: Math.floor((now - info.lastUsed) / DAY_MS),
+        hasLinks: info.subtreeHasLinks,
         newestFile: findNewestFile(node, info.lastUsed, usage),
       });
       return;

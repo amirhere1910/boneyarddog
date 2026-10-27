@@ -151,6 +151,9 @@
 
     li.append(el('p', 'ruta', dirname(item.path)));
     li.append(el('p', 'carpeta-uso', `Sin uso ${formatUnused(item.daysUnused)} · ${plural(item.fileCount, 'archivo', 'archivos')}`));
+    if (item.hasLinks) {
+      li.append(el('p', 'nota carpeta-enlaces', 'Contiene enlaces (accesos directos del sistema): no se siguen ni se cuentan en el tamaño.'));
+    }
     if (item.newestFile) {
       li.append(el('p', 'nota carpeta-reciente', `Archivo más reciente: ${item.newestFile.name} (${formatDate(item.newestFile.ms)})`));
     } else {
@@ -175,6 +178,7 @@
     const list = $('lista');
     list.replaceChildren(...result.items.map(renderItem));
     $('vacio').hidden = result.items.length > 0;
+    $('vacio-creacion').hidden = !(result.items.length === 0 && state.settings && state.settings.useCreationTime);
     if (result.truncated) {
       const extra = el('li', 'nota', `Se muestran las ${nf.format(result.items.length)} más grandes de ${nf.format(folders)}.`);
       list.append(extra);
@@ -190,13 +194,19 @@
     const s = state.summary;
     const byKind = (s && s.skippedByKind) || {};
     const denied = byKind.permission || 0;
-    const other = ((s && s.skippedCount) || 0) - denied;
+    const links = byKind.symlink || 0;
+    const other = ((s && s.skippedCount) || 0) - denied - links;
     const lines = [];
-    if (denied > 0) lines.push(`${plural(denied, 'elemento no se pudo leer', 'elementos no se pudieron leer')} por falta de permisos`);
-    if (other > 0) lines.push(`${plural(other, 'elemento se omitió', 'elementos se omitieron')} (enlaces, tipos especiales u otros)`);
+    if (denied > 0) {
+      lines.push(`${plural(denied, 'elemento no se pudo leer', 'elementos no se pudieron leer')} por falta de permisos (esas carpetas no se ofrecen enteras)`);
+    }
+    if (links > 0) {
+      lines.push(`${plural(links, 'enlace', 'enlaces')} sin seguir (las carpetas que contienen enlaces se ofrecen con un aviso; los enlaces no se siguen)`);
+    }
+    if (other > 0) lines.push(`${plural(other, 'elemento más se omitió', 'elementos más se omitieron')} (tipos especiales u otros)`);
     const note = $('aviso-omitidos');
     note.hidden = lines.length === 0;
-    note.textContent = lines.length ? `${lines.join('; ')}. Esas carpetas no se ofrecen enteras.` : '';
+    note.textContent = lines.length ? `${lines.join('. ')}.` : '';
   }
 
   function renderIgnored() {

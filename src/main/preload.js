@@ -14,8 +14,6 @@ contextBridge.exposeInMainWorld('byd', {
   chooseFolder: () => ipcRenderer.invoke('byd:choose-folder'),
   startScan: () => ipcRenderer.invoke('byd:start-scan'),
   cancelScan: () => ipcRenderer.invoke('byd:cancel-scan'),
-  getLargestFiles: (n) => ipcRenderer.invoke('byd:largest-files', n),
-  getLargestFolders: (n) => ipcRenderer.invoke('byd:largest-folders', n),
   getSettings: () => ipcRenderer.invoke('byd:get-settings'),
   saveSettings: (patch) => ipcRenderer.invoke('byd:save-settings', patch),
   getStaleFolders: () => ipcRenderer.invoke('byd:stale-folders'),

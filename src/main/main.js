@@ -202,16 +202,6 @@ function registerIpc() {
     (context.revealHook || shell.showItemInFolder)(node.path);
     return { path: node.path };
   });
-
-  handle(V.CHANNELS.largestFiles, async (n, ...rest) => {
-    V.validateNoArgs(rest);
-    return service.getLargestFiles(V.validateCount(n));
-  });
-
-  handle(V.CHANNELS.largestFolders, async (n, ...rest) => {
-    V.validateNoArgs(rest);
-    return service.getLargestFolders(V.validateCount(n));
-  });
 }
 
 async function start() {

@@ -14,8 +14,6 @@ const CHANNELS = Object.freeze({
   chooseFolder: 'byd:choose-folder',
   startScan: 'byd:start-scan',
   cancelScan: 'byd:cancel-scan',
-  largestFiles: 'byd:largest-files',
-  largestFolders: 'byd:largest-folders',
   getSettings: 'byd:get-settings',
   saveSettings: 'byd:save-settings',
   staleFolders: 'byd:stale-folders',
