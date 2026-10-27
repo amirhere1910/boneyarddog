@@ -41,6 +41,14 @@ test('validateAbsolutePath: acepta rutas absolutas y rechaza lo peligroso', () =
   assert.throws(() => V.validateAbsolutePath('C:\\Users\\..\\Windows'), V.ValidationError);
 });
 
+test('validateDriveLetter: una sola letra A–Z (sale en mayúscula)', () => {
+  assert.equal(V.validateDriveLetter('c'), 'C');
+  assert.equal(V.validateDriveLetter('Z'), 'Z');
+  for (const mal of ['', 'CC', 'C:', 'C:\\', '1', '*', ' ', 'ñ', '\0', null, undefined, 3, ['C']]) {
+    assert.throws(() => V.validateDriveLetter(mal), V.ValidationError, JSON.stringify(mal));
+  }
+});
+
 test('validateNoArgs: los canales sin datos rechazan cualquier argumento', () => {
   assert.doesNotThrow(() => V.validateNoArgs([]));
   assert.throws(() => V.validateNoArgs(['C:\\']), V.ValidationError);

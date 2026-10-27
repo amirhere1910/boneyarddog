@@ -104,3 +104,36 @@ table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
 th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--borde); vertical-align: top; }
 th.num, td.num { text-align: right; white-space: nowrap; }
 td.ubicacion { color: var(--suave); overflow-wrap: anywhere; }
+
+/* Fase 2B */
+h2:focus { outline: none; }
+.mensaje { margin: 0 0 16px; }
+.controles { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; margin: 12px 0; }
+.campo { display: flex; flex-direction: column; gap: 4px; }
+label { font-size: 0.9rem; color: var(--suave); }
+select, input[type="number"] {
+  padding: 7px 10px;
+  font: inherit;
+  color: var(--texto);
+  background: var(--panel);
+  border: 1px solid var(--borde);
+  border-radius: 6px;
+}
+input[type="number"] { width: 6em; }
+select:focus-visible, input:focus-visible, summary:focus-visible { outline: 3px solid var(--acento); outline-offset: 2px; }
+.calculando { margin: 0; color: var(--suave); font-style: italic; }
+.vacio { padding: 16px; text-align: center; color: var(--suave); border: 1px dashed var(--borde); border-radius: 8px; }
+.lista { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 10px; }
+.carpeta { padding: 12px 14px; border: 1px solid var(--borde); border-radius: 8px; }
+.carpeta p { margin: 4px 0; }
+.carpeta-cabecera { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.carpeta-nombre { margin: 0; font-size: 1.05rem; overflow-wrap: anywhere; }
+.carpeta-tamano { font-weight: 600; white-space: nowrap; }
+.carpeta .fila { margin-top: 8px; flex-wrap: wrap; }
+.ignorada { display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; }
+.btn-unidad { min-width: 8em; }
+.acciones-pie { margin-top: 16px; flex-wrap: wrap; }
+details { margin-top: 12px; }
+summary { cursor: pointer; font-weight: 600; }
+.avanzado { margin-top: 8px; display: grid; gap: 8px; }
+.check { display: flex; gap: 8px; align-items: flex-start; color: var(--texto); font-size: 1rem; }

@@ -93,17 +93,49 @@ function maxFinite(values) {
 }
 
 /**
- * Fecha de "último uso" (ms) = la más reciente entre atime y mtime.
- *  - Carpeta con contenido: se usa SOLO lo de adentro (la más reciente de
- *    todo su contenido). Ni el atime ni el mtime de la propia carpeta cuentan:
- *    escanearla (leer su lista) puede actualizar su atime y daría falsos
- *    "usos recientes".
- *  - Carpeta vacía: se usa su mtime (el atime propio se ignora por lo mismo).
- *  - `ignoreAtime: true` usa solo mtime (para cuando atime no es fiable).
- * Devuelve null si el nodo no trae fechas válidas.
+ * ¿QUÉ CUENTA COMO "USO" DE UN ARCHIVO? (una sola definición para toda la app)
+ *
+ * La fecha de último uso de un archivo es la MÁS RECIENTE entre:
+ *  - su fecha de modificación (mtime): siempre cuenta;
+ *  - su fecha de creación (birthtime): cuenta si `useCreationTime` (por
+ *    defecto SÍ). Razón: al copiar una carpeta, Windows conserva la fecha de
+ *    modificación pero pone una fecha de creación nueva; sin esto, una carpeta
+ *    vieja recién restaurada de un respaldo parecería abandonada;
+ *  - su fecha de último acceso (atime): cuenta solo si `useAccessTime` (por
+ *    defecto NO). Razón: antivirus, indexadores y copias de seguridad la
+ *    cambian sin que el usuario abra nada.
+ * Una fecha en 0, negativa o que no sea un número se trata como "no se sabe"
+ * y no cuenta (un archivo sin ninguna fecha válida queda con uso desconocido,
+ * y lo desconocido nunca se ofrece como abandonado).
+ *
+ * Una CARPETA con contenido usa la más reciente de TODOS sus archivos; las
+ * fechas de la propia carpeta se ignoran (escanearla puede cambiarlas). Una
+ * carpeta vacía usa su mtime.
  */
-function lastUsedDate(node, { ignoreAtime = false } = {}) {
-  return computeInfo(node, defaultIsProtected, ignoreAtime, new Map()).lastUsed;
+function normalizeUsage(options) {
+  const o = options || {};
+  return { useAccessTime: o.useAccessTime === true, useCreationTime: o.useCreationTime !== false };
+}
+
+function validDate(v) {
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+
+function fileLastUsed(node, usage) {
+  const dates = [validDate(node.mtimeMs)];
+  if (usage.useCreationTime) dates.push(validDate(node.birthtimeMs));
+  if (usage.useAccessTime) dates.push(validDate(node.atimeMs));
+  return maxFinite(dates);
+}
+
+/**
+ * Fecha de "último uso" (ms) de un archivo o carpeta, según la definición de
+ * arriba. Devuelve null si el nodo no trae fechas válidas.
+ * @param {object} node
+ * @param {{useAccessTime?: boolean, useCreationTime?: boolean}} [options]
+ */
+function lastUsedDate(node, options) {
+  return computeInfo(node, defaultIsProtected, normalizeUsage(options), new Map()).lastUsed;
 }
 
 /**
@@ -116,7 +148,7 @@ function lastUsedDate(node, { ignoreAtime = false } = {}) {
  *    leer su lista), `partial` (un hijo no se pudo leer) o no trae datos
  *  - noData: carpeta sin la lista `children`
  */
-function computeInfo(node, isProtected, ignoreAtime, memo) {
+function computeInfo(node, isProtected, usage, memo) {
   const cached = memo.get(node);
   if (cached) return cached;
   const selfProtected = Boolean(isProtected(node.path));
@@ -127,15 +159,15 @@ function computeInfo(node, isProtected, ignoreAtime, memo) {
   const noData = !isFile(node) && !Array.isArray(node.children);
   let subtreeIncomplete = noData || Boolean(node.incomplete) || Boolean(node.partial);
   if (isFile(node)) {
-    lastUsed = maxFinite(ignoreAtime ? [node.mtimeMs] : [node.atimeMs, node.mtimeMs]);
+    lastUsed = fileLastUsed(node, usage);
   } else if (noData) {
     lastUsed = null;
   } else if (node.children.length === 0) {
-    lastUsed = maxFinite([node.mtimeMs]);
+    lastUsed = validDate(node.mtimeMs);
   } else {
     const dates = [];
     for (const child of node.children) {
-      const info = computeInfo(child, isProtected, ignoreAtime, memo);
+      const info = computeInfo(child, isProtected, usage, memo);
       dates.push(info.lastUsed);
       if (info.subtreeProtected) subtreeProtected = true;
       if (!info.fullyProtected) fullyProtected = false;
@@ -154,10 +186,10 @@ function computeInfo(node, isProtected, ignoreAtime, memo) {
  * para el árbol privado del servicio de análisis, que luego lista carpetas sin
  * recalcular. Los nodos sin datos o sin fecha quedan con `lastUsedMs: null`.
  */
-function annotateLastUsed(tree, { ignoreAtime = false } = {}) {
+function annotateLastUsed(tree, options) {
   if (!tree) return;
   const memo = new Map();
-  computeInfo(tree, () => false, ignoreAtime, memo);
+  computeInfo(tree, () => false, normalizeUsage(options), memo);
   for (const [node, info] of memo) node.lastUsedMs = info.lastUsed;
 }
 
@@ -189,7 +221,8 @@ function annotateLastUsed(tree, { ignoreAtime = false } = {}) {
  * @param {number} opts.olderThanDays
  * @param {number} [opts.minSizeBytes=0]
  * @param {number} [opts.now=Date.now()] Inyectable para pruebas.
- * @param {boolean} [opts.ignoreAtime=false] Usar solo mtime.
+ * @param {boolean} [opts.useAccessTime=false] Ver "qué cuenta como uso".
+ * @param {boolean} [opts.useCreationTime=true] Ver "qué cuenta como uso".
  * @param {(p: string) => boolean} [opts.isProtected]
  * @returns {{items: Array, notOffered: Array, totalBytes: number}}
  */
@@ -198,9 +231,9 @@ function findStale(tree, opts = {}) {
     olderThanDays,
     minSizeBytes = 0,
     now = Date.now(),
-    ignoreAtime = false,
     isProtected = defaultIsProtected,
   } = opts;
+  const usage = normalizeUsage(opts);
   if (!Number.isFinite(olderThanDays) || olderThanDays < 0) {
     throw new RangeError('olderThanDays debe ser un número mayor o igual a 0');
   }
@@ -212,7 +245,7 @@ function findStale(tree, opts = {}) {
   const memo = new Map();
 
   function visit(node) {
-    const info = computeInfo(node, isProtected, ignoreAtime, memo);
+    const info = computeInfo(node, isProtected, usage, memo);
     if (info.noData) {
       if (!(node.size < minSizeBytes)) notOffered.push(skipEntry(node, 'sin-datos'));
       return;
@@ -257,11 +290,162 @@ function skipEntry(node, reason) {
 }
 
 // ---------------------------------------------------------------------------
+// Carpetas sin uso (el detector principal de la app)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_STALE_DAYS = 90;
+const DEFAULT_MIN_FOLDER_BYTES = 500 * 1024 * 1024; // 500 MB
+
+/**
+ * Carpetas grandes SIN USO, pensadas para moverlas a un disco externo.
+ *
+ * Una carpeta está sin uso si NINGÚN archivo dentro cuenta como usado en los
+ * últimos `olderThanDays` días (ver "qué cuenta como uso" más arriba: por
+ * defecto solo modificación y creación; el acceso se ignora).
+ *
+ * Reglas:
+ *  - Devuelve SOLO carpetas, y cada una es la MÁS ALTA que cumple: si
+ *    "D:\Proyectos\2019" es candidata, sus subcarpetas no se repiten. Nunca
+ *    hay solapamientos.
+ *  - La carpeta raíz escaneada nunca se ofrece: si toda estuviera sin uso, se
+ *    evalúan sus hijos.
+ *  - No se ofrecen (van a `notOffered` con su motivo; sus hijos se revisan por
+ *    separado, salvo donde se indica):
+ *      'protegido'            la carpeta está protegida (si TODO su contenido
+ *                             también lo está, no se desglosa)
+ *      'contiene-protegidos'  tiene algo protegido dentro
+ *      'contiene-no-leidos'   algo dentro no se pudo leer del todo
+ *      'sin-datos'            carpeta sin lista `children` (no se desglosa)
+ *      'excluida-por-usuario' el usuario la ignoró, o está dentro de una
+ *                             ignorada (no se desglosa)
+ *      'contiene-excluidas'   tiene dentro una carpeta que el usuario ignoró:
+ *                             moverla entera arrastraría la ignorada
+ *    `notOffered` solo recoge lo que habría sido candidato (sin uso y con el
+ *    tamaño mínimo).
+ *  - Cada resultado trae `newestFile`: el archivo cuya fecha determina el
+ *    último uso, para que el usuario entienda por qué la carpeta se considera
+ *    sin uso (null en carpetas vacías). Se calcula solo para los resultados.
+ *  - Orden: tamaño, de mayor a menor.
+ *
+ * @param {object} tree Árbol del escáner.
+ * @param {object} [opts]
+ * @param {number} [opts.olderThanDays=90]
+ * @param {number} [opts.minSizeBytes=524288000] 500 MB
+ * @param {number} [opts.now=Date.now()] Inyectable para pruebas.
+ * @param {boolean} [opts.useAccessTime=false]
+ * @param {boolean} [opts.useCreationTime=true]
+ * @param {string[]} [opts.excludedPaths=[]] Carpetas ignoradas por el usuario.
+ * @param {(p: string) => boolean} [opts.isProtected]
+ * @returns {{items: Array, notOffered: Array, totalBytes: number}}
+ */
+function findStaleFolders(tree, opts = {}) {
+  const {
+    olderThanDays = DEFAULT_STALE_DAYS,
+    minSizeBytes = DEFAULT_MIN_FOLDER_BYTES,
+    now = Date.now(),
+    excludedPaths = [],
+    isProtected = defaultIsProtected,
+  } = opts;
+  if (!Number.isFinite(olderThanDays) || olderThanDays < 0) {
+    throw new RangeError('olderThanDays debe ser un número mayor o igual a 0');
+  }
+  const usage = normalizeUsage(opts);
+  const items = [];
+  const notOffered = [];
+  if (!tree || isFile(tree) || !Array.isArray(tree.children)) return { items, notOffered, totalBytes: 0 };
+
+  const cutoff = now - olderThanDays * DAY_MS;
+  const memo = new Map();
+
+  // Rutas ignoradas: se comparan sin distinguir mayúsculas en rutas de Windows.
+  const excludedKeys = new Set();
+  const containsExcludedKeys = new Set();
+  for (const p of excludedPaths) {
+    if (typeof p !== 'string' || p === '') continue;
+    const k = pathKey(p);
+    excludedKeys.add(k.key);
+    for (const anc of ancestorKeys(k)) containsExcludedKeys.add(anc);
+  }
+  const isExcluded = (node) => {
+    if (excludedKeys.size === 0) return false;
+    const k = pathKey(node.path);
+    if (excludedKeys.has(k.key)) return true;
+    for (const anc of ancestorKeys(k)) if (excludedKeys.has(anc)) return true;
+    return false;
+  };
+  const containsExcluded = (node) => containsExcludedKeys.size > 0 && containsExcludedKeys.has(pathKey(node.path).key);
+
+  function visit(node) {
+    if (isFile(node)) return;
+    const info = computeInfo(node, isProtected, usage, memo);
+    if (info.noData) {
+      if (!(node.size < minSizeBytes)) notOffered.push(skipEntry(node, 'sin-datos'));
+      return;
+    }
+    const stale = info.lastUsed !== null && info.lastUsed < cutoff;
+    if (!stale) {
+      node.children.forEach(visit);
+      return;
+    }
+    if (node.size < minSizeBytes) return; // sus hijos son aún más chicos
+
+    if (info.selfProtected) {
+      notOffered.push(skipEntry(node, 'protegido'));
+      if (info.fullyProtected) return;
+    } else if (info.subtreeProtected) {
+      notOffered.push(skipEntry(node, 'contiene-protegidos'));
+    } else if (isExcluded(node)) {
+      notOffered.push(skipEntry(node, 'excluida-por-usuario'));
+      return;
+    } else if (info.subtreeIncomplete) {
+      notOffered.push(skipEntry(node, 'contiene-no-leidos'));
+    } else if (containsExcluded(node)) {
+      notOffered.push(skipEntry(node, 'contiene-excluidas'));
+    } else {
+      items.push({
+        node,
+        path: node.path,
+        name: node.name,
+        size: node.size,
+        fileCount: node.fileCount,
+        lastUsedMs: info.lastUsed,
+        daysUnused: Math.floor((now - info.lastUsed) / DAY_MS),
+        newestFile: findNewestFile(node, info.lastUsed, usage),
+      });
+      return;
+    }
+    node.children.forEach(visit);
+  }
+  tree.children.forEach(visit);
+
+  items.sort(bySizeThenPath);
+  notOffered.sort(bySizeThenPath);
+  return { items, notOffered, totalBytes: items.reduce((sum, i) => sum + i.size, 0) };
+}
+
+/** El archivo de la carpeta cuya fecha de uso es `ms` (el más reciente), o null. */
+function findNewestFile(folder, ms, usage) {
+  const stack = [folder];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (isFile(node)) {
+      if (fileLastUsed(node, usage) === ms) return { path: node.path, name: node.name, ms };
+    } else if (Array.isArray(node.children)) {
+      for (const child of node.children) stack.push(child);
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Fiabilidad de la fecha de último acceso
 // ---------------------------------------------------------------------------
 
 /**
  * Heurística: ¿la fecha de último acceso (atime) parece fiable?
+ * SOLO INFORMATIVA (panel avanzado): ya no decide nada; el acceso se ignora
+ * salvo que el usuario active `useAccessTime`.
+ *
  *
  * Windows suele tener desactivado su registro (o lo actualiza con retraso), y
  * entonces atime queda igual a la fecha de modificación o de creación. Si casi
@@ -380,7 +564,7 @@ function summarize(selection, { isProtected = defaultIsProtected } = {}) {
   const seen = new Set();
 
   for (const node of selection || []) {
-    const info = computeInfo(node, isProtected, false, memo);
+    const info = computeInfo(node, isProtected, normalizeUsage(), memo);
     if (info.selfProtected) {
       excluded.push({ node, reason: 'protegido' });
     } else if (info.subtreeProtected) {
@@ -424,9 +608,13 @@ module.exports = {
   DAY_MS,
   topLargestFiles,
   topLargestFolders,
+  normalizeUsage,
   lastUsedDate,
   annotateLastUsed,
   findStale,
+  findStaleFolders,
+  DEFAULT_STALE_DAYS,
+  DEFAULT_MIN_FOLDER_BYTES,
   atimeReliability,
   summarize,
 };

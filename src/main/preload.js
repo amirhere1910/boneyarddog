@@ -16,6 +16,14 @@ contextBridge.exposeInMainWorld('byd', {
   cancelScan: () => ipcRenderer.invoke('byd:cancel-scan'),
   getLargestFiles: (n) => ipcRenderer.invoke('byd:largest-files', n),
   getLargestFolders: (n) => ipcRenderer.invoke('byd:largest-folders', n),
+  getSettings: () => ipcRenderer.invoke('byd:get-settings'),
+  saveSettings: (patch) => ipcRenderer.invoke('byd:save-settings', patch),
+  getStaleFolders: () => ipcRenderer.invoke('byd:stale-folders'),
+  excludePath: (p) => ipcRenderer.invoke('byd:exclude-path', p),
+  includePath: (p) => ipcRenderer.invoke('byd:include-path', p),
+  listDrives: () => ipcRenderer.invoke('byd:list-drives'),
+  chooseDrive: (letter) => ipcRenderer.invoke('byd:choose-drive', letter),
+  revealInExplorer: (p) => ipcRenderer.invoke('byd:reveal', p),
   /** Suscribe a los avisos de progreso. Devuelve una función para darse de baja. */
   onProgress: (callback) => {
     if (typeof callback !== 'function') throw new TypeError('onProgress necesita una función');

@@ -9,49 +9,112 @@
 </head>
 <body data-estado="inicio">
   <header class="cabecera">
-    <img src="../../assets/logo.svg" alt="" width="64" height="64">
+    <img src="../../assets/logo.svg" alt="" width="56" height="56">
     <div>
       <h1>BoneYardDog</h1>
-      <p class="subtitulo">Encuentra lo que ocupa espacio y lleva tiempo sin usarse.</p>
+      <p class="subtitulo">Encuentra carpetas grandes que llevan tiempo sin usarse.</p>
     </div>
   </header>
 
-  <p class="aviso" role="note">Fase de desarrollo: esta pantalla solo analiza. No borra ni mueve nada.</p>
+  <p class="aviso" role="note">Esta versión solo analiza. No borra ni mueve nada.</p>
 
-  <section class="panel" aria-label="Elegir carpeta">
+  <p id="mensaje" class="mensaje" role="alert" hidden></p>
+
+  <!-- 1. Inicio -->
+  <section id="vista-inicio" class="panel" aria-labelledby="t-inicio">
+    <h2 id="t-inicio">¿Qué quieres revisar?</h2>
+    <div id="unidades" class="fila" role="group" aria-label="Unidades detectadas"></div>
     <div class="fila">
-      <button id="btn-elegir" type="button">Elegir carpeta…</button>
-      <button id="btn-cancelar" type="button" class="secundario" hidden>Cancelar</button>
+      <button id="btn-elegir" type="button" class="secundario">Elegir carpeta…</button>
     </div>
-    <p id="carpeta-elegida" class="ruta" aria-live="polite"></p>
   </section>
 
-  <section id="seccion-progreso" class="panel" aria-label="Progreso" hidden>
+  <!-- 2. Escaneo -->
+  <section id="vista-escaneo" class="panel" aria-labelledby="t-escaneo" hidden>
+    <h2 id="t-escaneo">Escaneando…</h2>
     <div class="barra" role="progressbar" aria-label="Escaneando" aria-valuetext="Escaneando"><div class="barra-relleno"></div></div>
-    <p id="progreso-texto" aria-live="polite"></p>
+    <p id="progreso-texto" role="status"></p>
     <p id="progreso-ruta" class="ruta"></p>
+    <div class="fila"><button id="btn-cancelar" type="button" class="secundario">Cancelar</button></div>
   </section>
 
-  <p id="mensaje" class="mensaje" role="status" aria-live="polite" hidden></p>
+  <!-- 3. Resultado -->
+  <div id="vista-resultado" hidden>
+    <section class="panel" aria-labelledby="res-titulo">
+      <h2 id="res-titulo" tabindex="-1">–</h2>
+      <p id="res-carpeta" class="ruta"></p>
 
-  <section id="seccion-resultados" class="panel" aria-label="Resultados" hidden>
-    <h2>Resultado</h2>
-    <dl class="cifras">
-      <div><dt>Archivos</dt><dd id="res-archivos">–</dd></div>
-      <div><dt>Carpetas</dt><dd id="res-carpetas">–</dd></div>
-      <div><dt>Tamaño total</dt><dd id="res-tamano">–</dd></div>
-      <div><dt>Omitidos</dt><dd id="res-omitidos">–</dd></div>
-    </dl>
-    <p id="res-atime" class="nota"></p>
+      <div class="controles">
+        <div class="campo">
+          <label for="sel-periodo">Sin uso desde hace</label>
+          <select id="sel-periodo">
+            <option value="30">1 mes</option>
+            <option value="90">3 meses</option>
+            <option value="180">6 meses</option>
+            <option value="365">1 año</option>
+            <option value="730">2 años</option>
+            <option value="custom">Personalizado…</option>
+          </select>
+        </div>
+        <div id="grupo-custom" class="campo" hidden>
+          <label for="inp-custom">Período personalizado</label>
+          <div class="fila">
+            <input id="inp-custom" type="number" min="1" max="3650" step="1" value="90" inputmode="numeric">
+            <select id="sel-unidad-custom" aria-label="Unidad del período personalizado">
+              <option value="dias">días</option>
+              <option value="meses">meses</option>
+            </select>
+            <button id="btn-custom" type="button" class="secundario">Aplicar</button>
+          </div>
+          <p id="ayuda-custom" class="nota">Entre 7 días y 10 años.</p>
+        </div>
+        <div class="campo">
+          <label for="sel-minimo">Tamaño mínimo</label>
+          <select id="sel-minimo">
+            <option value="104857600">100 MB</option>
+            <option value="524288000">500 MB</option>
+            <option value="1073741824">1 GB</option>
+            <option value="5368709120">5 GB</option>
+            <option value="10737418240">10 GB</option>
+          </select>
+        </div>
+        <p id="calculando" class="calculando" role="status" hidden>Calculando…</p>
+      </div>
 
-    <h2>Los 10 archivos más grandes</h2>
-    <table>
-      <thead>
-        <tr><th scope="col">Nombre</th><th scope="col">Ubicación</th><th scope="col" class="num">Tamaño</th><th scope="col">Último uso</th></tr>
-      </thead>
-      <tbody id="tabla-top"></tbody>
-    </table>
-  </section>
+      <p id="aviso-omitidos" class="nota" hidden></p>
+      <p id="aviso-no-ofrecidas" class="nota" hidden></p>
+      <p id="vacio" class="vacio" hidden>No hay carpetas sin uso con estos filtros.</p>
+      <ul id="lista" class="lista" aria-label="Carpetas sin uso"></ul>
+
+      <div class="fila acciones-pie">
+        <button id="btn-mover" type="button" disabled aria-describedby="txt-mover">Mover a disco externo…</button>
+        <span id="txt-mover" class="nota">Disponible en la próxima versión</span>
+        <button id="btn-nuevo" type="button" class="secundario">Revisar otra unidad o carpeta</button>
+      </div>
+    </section>
+
+    <section id="sec-ignoradas" class="panel" aria-labelledby="t-ignoradas">
+      <h2 id="t-ignoradas">Carpetas ignoradas</h2>
+      <p id="ignoradas-vacio" class="nota">No hay carpetas ignoradas.</p>
+      <ul id="lista-ignoradas" class="lista"></ul>
+    </section>
+
+    <section id="como-decide" class="panel" aria-labelledby="t-como">
+      <h2 id="t-como">Cómo decide BoneYardDog</h2>
+      <p>Una carpeta se considera sin uso si <strong>ningún archivo</strong> dentro fue modificado ni creado o copiado en el período elegido.</p>
+      <p>La fecha de «último acceso» se ignora porque antivirus, indexadores y copias de seguridad la cambian sin que tú abras nada.</p>
+      <p><strong>Limitación:</strong> si solo <em>lees</em> archivos (fotos, música, documentos de consulta) sin modificarlos, la app no puede saberlo. Por eso cada carpeta muestra su archivo más reciente y puedes marcarla «Ignorar».</p>
+
+      <details id="avanzado">
+        <summary>Opciones avanzadas</summary>
+        <div class="avanzado">
+          <label class="check"><input id="chk-acceso" type="checkbox"> Usar la fecha de último acceso</label>
+          <label class="check"><input id="chk-creacion" type="checkbox"> Usar la fecha de creación (evita ofrecer carpetas recién restauradas de un respaldo)</label>
+          <p id="res-atime" class="nota"></p>
+        </div>
+      </details>
+    </section>
+  </div>
 
   <script src="app.js"></script>
 </body>

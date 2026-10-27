@@ -102,8 +102,18 @@ class AnalysisService extends EventEmitter {
     return this._call('cancel');
   }
 
+  /** Cambia qué cuenta como "uso": { useAccessTime, useCreationTime }. Devuelve las opciones vigentes. */
+  setUsageOptions(options) {
+    return this._call('setUsageOptions', options);
+  }
+
   getChildren(folderPath, options) {
     return this._call('getChildren', folderPath, options);
+  }
+
+  /** Nodo liviano de una ruta, o rechaza con RUTA_DESCONOCIDA si no está en el árbol. */
+  getNode(p) {
+    return this._call('getNode', p);
   }
 
   getLargestFiles(n) {
@@ -116,6 +126,11 @@ class AnalysisService extends EventEmitter {
 
   getStale(options) {
     return this._call('getStale', options);
+  }
+
+  /** Carpetas sin uso: { olderThanDays, minSizeBytes, excludedPaths }. */
+  getStaleFolders(options) {
+    return this._call('getStaleFolders', options);
   }
 
   summarizeSelection(paths) {
