@@ -225,10 +225,14 @@ test('un escaneo nuevo reemplaza al anterior', async (t) => {
 
 test('el mensaje entre hilos nunca contiene el árbol completo', async (t) => {
   const root = tmpDir(t);
-  for (let d = 0; d < 50; d++) for (let f = 0; f < 100; f++) put(root, `carpeta${d}/archivo-${f}.dat`, 1 + f, f % 3 === 0 ? 700 : 0);
+  // 12 000 archivos: pesan ~2 MB serializado aunque la ruta temporal sea corta; el
+  // margen sobre el umbral no depende del largo de la ruta del entorno.
+  for (let d = 0; d < 60; d++) for (let f = 0; f < 200; f++) put(root, `carpeta${d}/archivo-${f}.dat`, 1 + f, f % 3 === 0 ? 700 : 0);
   const direct = await scan(root);
   const treeBytes = v8.serialize(direct.tree).length;
   assert.ok(treeBytes > 1_000_000, `el árbol de prueba debe ser grande (${treeBytes} bytes)`);
+  // Debe superar el umbral con holgura (>= 50 %), sin depender de la ruta.
+  assert.ok(treeBytes > 1_500_000, `sin holgura suficiente sobre el umbral (${treeBytes} bytes)`);
 
   const sizes = [];
   let sawChildrenKey = false;

@@ -171,7 +171,23 @@ function run({ app, win, context, service, indexUrl }) {
         iso.bydKeys,
       );
       check('política CSP estricta', iso.csp && iso.csp.startsWith("default-src 'self'") && iso.csp.includes("connect-src 'none'"), iso.csp);
-      check('la red está bloqueada', iso.networkBlocked, iso.networkBlocked);
+      check('la CSP bloquea conexiones', iso.networkBlocked, iso.networkBlocked);
+
+      // Bloqueo de la SESIÓN (lockDownSession en main.js), probado desde el proceso principal:
+      // la petición debe fallar por el bloqueo y no por falta de internet.
+      const { session } = require('electron');
+      if (typeof session.defaultSession.fetch !== 'function') {
+        check('la sesión bloquea la red (session.fetch)', true, 'session.fetch no existe en esta versión de Electron: no se pudo comprobar');
+      } else {
+        let blockedMessage = null;
+        try {
+          await session.defaultSession.fetch('https://example.com/');
+        } catch (err) {
+          blockedMessage = String(err && err.message ? err.message : err);
+        }
+        report.sessionFetch = blockedMessage;
+        check('la sesión bloquea la red (session.fetch)', blockedMessage !== null && /ERR_BLOCKED_BY_CLIENT/.test(blockedMessage), blockedMessage);
+      }
 
       await win.webContents.executeJavaScript("document.getElementById('btn-elegir').click()");
 

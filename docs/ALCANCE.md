@@ -51,3 +51,8 @@ Principio rector: **nunca perder datos por accidente**. Toda sugerencia pasa por
 ## Medidas
 
 Con 50 000 archivos (50 501 nodos), en Linux: ~358 bytes por nodo en memoria y ~203 bytes por nodo al serializarlo. Es una medida del árbol actual; todavía no se ha optimizado.
+
+## Notas para la Fase 3 (acciones)
+
+- **Las protecciones se vuelven a comprobar justo antes de actuar**, no solo al listar: entre el escaneo y la acción el disco puede haber cambiado (un enlace nuevo, una carpeta renombrada).
+- **`isProtectedPath` no resuelve nombres cortos 8.3 dentro de la carpeta de usuario** (p. ej. `C:\Users\amir\DOCUME~1`). Hoy no es explotable porque el escáner entrega siempre nombres largos, pero la Fase 3 no debe aceptar rutas escritas a mano sin resolverlas antes.
