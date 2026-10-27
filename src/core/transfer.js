@@ -158,9 +158,24 @@ function createTransferEngine(deps = {}) {
 
   // -------------------------------------------------------- eliminaciones (únicas)
 
+  /**
+   * ¿La carpeta que contiene `p` está REALMENTE dentro de `container`? Resuelve enlaces: si una carpeta
+   * intermedia fuera un enlace hacia otro sitio, `lstat` solo no lo notaría (no sigue el último
+   * componente, pero sí los de en medio) y se podría borrar algo ajeno.
+   */
+  async function parentReallyInside(p, container) {
+    try {
+      const realParent = await fsp.realpath(nodePath.dirname(p));
+      const realContainer = await fsp.realpath(container);
+      return R.isInside(realParent, realContainer);
+    } catch {
+      return false;
+    }
+  }
+
   /** Quita UN archivo que esta operación creó (lo registrado), solo dentro de su lote. */
   async function removeOwn(filePath, batchFolder) {
-    if (!strictlyInside(filePath, batchFolder)) return false;
+    if (!strictlyInside(filePath, batchFolder) || !(await parentReallyInside(filePath, batchFolder))) return false;
     let st;
     try {
       st = await fsp.lstat(filePath);
@@ -175,7 +190,7 @@ function createTransferEngine(deps = {}) {
   /** Quita un elemento registrado (archivo, o carpeta vacía) dentro del lote. */
   async function removeCreatedEntry(entry, container) {
     const p = entry.path;
-    if (!strictlyInside(p, container)) return 'fuera-del-lote';
+    if (!strictlyInside(p, container) || !(await parentReallyInside(p, container))) return 'fuera-del-lote';
     let st;
     try {
       st = await fsp.lstat(p);
@@ -260,7 +275,8 @@ function createTransferEngine(deps = {}) {
    * Revisa TODO antes de escribir nada (salvo una sonda de escritura que se crea y se quita).
    * @returns {Promise<{blockers: Array, warnings: Array, plan: object|null, destination: object, disposal: object}>}
    */
-  async function preflight(options = {}) {
+  async function preflight(rawOptions) {
+    const options = rawOptions && typeof rawOptions === 'object' && !Array.isArray(rawOptions) ? rawOptions : {};
     const blockers = [];
     const warnings = [];
     const block = (code, message, extra) => blockers.push({ code, message, ...extra });
@@ -399,7 +415,6 @@ function createTransferEngine(deps = {}) {
       let sDirs = 0;
       let sBytes = 0;
       const byParent = new Map();
-      byParent.set('', [parts[parts.length - 1]]);
       for (const e of w.entries) {
         const idx = e.rel.lastIndexOf('/');
         const parent = idx === -1 ? '' : e.rel.slice(0, idx);

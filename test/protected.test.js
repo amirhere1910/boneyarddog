@@ -256,3 +256,19 @@ test('opción allowAppData: AppData deja de estar protegida, lo demás sigue igu
     assert.equal(isProtectedPath(r, opt), true, r);
   }
 });
+
+test('BoneYardDog-Cuarentena está protegida en la raíz de cualquier unidad (con todo lo que contiene)', () => {
+  check(
+    [
+      'D:\\BoneYardDog-Cuarentena',
+      'd:/boneyarddog-cuarentena',
+      'C:\\BoneYardDog-Cuarentena\\2026-10-27_1405',
+      'E:\\BoneYardDog-Cuarentena\\2026-10-27_1405\\Users\\amir\\Fotos\\a.jpg',
+      'D:\\BoneYardDog-Cuarentena \\x',
+      'D:\\Datos\\..\\BoneYardDog-Cuarentena\\x',
+    ],
+    true,
+  );
+  // Solo en la raíz: una carpeta con ese nombre más adentro, o con prefijo parecido, no.
+  check(['D:\\Datos\\BoneYardDog-Cuarentena', 'D:\\BoneYardDog-Cuarentena2', 'D:\\BoneYardDog', 'D:\\BoneYardDog\\2026-10-27_1405'], false);
+});
