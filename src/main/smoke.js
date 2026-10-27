@@ -464,10 +464,11 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
       })()`);
     const waitDialog = async (pred, what) => {
       if (process.env.BYD_SMOKE_DEBUG) console.log(`[smoke] esperando: ${what}`);
+      const waitStart = Date.now();
       for (;;) {
         const d = await dialogState();
         if (pred(d)) return d;
-        if (Date.now() - started > TIME_LIMIT_MS) throw new Error(`Se agotó el tiempo esperando: ${what} :: ${JSON.stringify(d)}`);
+        if (Date.now() - waitStart > 40_000 || Date.now() - started > TIME_LIMIT_MS) throw new Error(`Se agotó el tiempo esperando: ${what} :: ${JSON.stringify(d)}`);
         await sleep(60);
       }
     };
