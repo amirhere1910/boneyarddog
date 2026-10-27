@@ -364,6 +364,8 @@ function registerIpc() {
     try {
       const result = await transferService.run(planId);
       rememberRevealable(result);
+      // «Verificar de nuevo la copia» usa esta carpeta de lote (confirmada por el motor, con su MANIFIESTO.json).
+      if (result.batchFolder) await setBatchFolder(result.batchFolder).catch(() => {});
       return result;
     } finally {
       context.transferBusy = false;

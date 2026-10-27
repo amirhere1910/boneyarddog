@@ -28,6 +28,17 @@ const TIME_LIMIT_MS = Number(process.env.BYD_SMOKE_TIMEOUT_MS) || 90_000;
 const DAY = 24 * 60 * 60 * 1000;
 
 const BRIDGE_KEYS = [
+  'chooseDestination',
+  'chooseDestinationDrive',
+  'listDestinationDrives',
+  'onTransferProgress',
+  'transferCancel',
+  'transferDeleteFromResult',
+  'transferPreflight',
+  'transferRemoveCopy',
+  'transferRun',
+  'verifyBatchChooseFolder',
+  'verifyBatchRun',
   'cancelScan',
   'chooseDrive',
   'chooseFolder',
@@ -199,7 +210,7 @@ const READ_WINDOW = `(() => {
       tramosTexto: [...document.querySelectorAll('#det-tramos li')].map((li) => li.textContent),
       subs: [...document.querySelectorAll('#det-subcarpetas li')].map((li) => li.dataset.ruta),
     },
-    seleccion: { visible: !hidden('barra-seleccion'), texto: sel.textContent, cantidad: Number(sel.dataset.cantidad), bytes: Number(sel.dataset.bytes), nota: hidden('sel-excluidas') ? '' : text('sel-excluidas'), copiarDeshabilitado: document.getElementById('btn-sel-copiar').disabled, transferirDeshabilitado: document.getElementById('btn-sel-transferir').disabled, proxima: text('txt-sel-proxima') },
+    seleccion: { visible: !hidden('barra-seleccion'), texto: sel.textContent, cantidad: Number(sel.dataset.cantidad), bytes: Number(sel.dataset.bytes), nota: hidden('sel-excluidas') ? '' : text('sel-excluidas'), copiarDeshabilitado: document.getElementById('btn-sel-copiar').disabled, transferirDeshabilitado: document.getElementById('btn-sel-transferir').disabled },
     lista: {
       titulo: { texto: title.textContent, cantidad: Number(title.dataset.cantidad), bytes: Number(title.dataset.bytes) },
       items: [...document.querySelectorAll('#lista > li.carpeta')].map((li) => ({
@@ -213,9 +224,6 @@ const READ_WINDOW = `(() => {
         botones: [...li.querySelectorAll('button')].map((b) => b.textContent),
       })),
       vacio: !hidden('vacio'),
-      moverDeshabilitado: document.getElementById('btn-mover').disabled,
-      moverTexto: text('btn-mover'),
-      moverAyuda: text('txt-mover'),
       omitidosVisible: !hidden('aviso-omitidos'),
       minimo: document.getElementById('sel-minimo').value,
     },
@@ -406,7 +414,7 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
       }
 
       // --- Inicio ----------------------------------------------------------------
-      check('inicio: aviso "solo analiza" y botón "Elegir carpeta…"', home.avisoSolo.includes('solo analiza. No borra ni mueve nada') && home.botonElegir === 'Elegir carpeta…', [home.avisoSolo, home.botonElegir]);
+      check('inicio: aviso "Prueba primero con datos de prueba…" y botón "Elegir carpeta…"', home.avisoSolo.includes('Prueba primero con datos de prueba, nunca con datos que no tengas respaldados') && home.botonElegir === 'Elegir carpeta…', [home.avisoSolo, home.botonElegir]);
       const wantDrives = process.platform === 'win32';
       check(
         'inicio: botones de unidades ("Escanear C:", …)',
@@ -491,7 +499,7 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
       const selOne = await waitFor((s) => s.seleccion.visible && s.seleccion.cantidad === 1 && s.seleccion.bytes === 6000, 'selección de vacaciones');
       check('Ctrl+clic marca la carpeta (✓) sin entrar y la barra suma su tamaño', cellOf(selOne, P.vacaciones).seleccionada && selOne.mapa.carpeta === P.videos && /1 carpeta seleccionada · /.test(selOne.seleccion.texto), selOne.seleccion);
       check('con la barra de selección, la leyenda y el mapa siguen a la vista y no se tapan', selOne.vista.barra && selOne.vista.barra.bottom <= selOne.vista.alto && selOne.vista.leyenda.bottom <= selOne.vista.barra.top + 1 && selOne.vista.contenedor.bottom <= selOne.vista.leyenda.top + 1, selOne.vista);
-      check('barra de selección: "Copiar…" y "Transferir…" desactivados con "Disponible en la próxima versión"', selOne.seleccion.copiarDeshabilitado && selOne.seleccion.transferirDeshabilitado && selOne.seleccion.proxima === 'Disponible en la próxima versión', selOne.seleccion);
+      check('barra de selección: "Copiar…" y "Transferir…" activos', !selOne.seleccion.copiarDeshabilitado && !selOne.seleccion.transferirDeshabilitado, selOne.seleccion);
 
       await js(`document.querySelector('#migas button').click()`);
       const back = await settled((s) => s.mapa.carpeta === fixture.root && s.mapa.celdas.length > 0, 'volver a la raíz con las migas');
@@ -527,7 +535,6 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
       check('la barra de selección se mantiene al cambiar de pestaña', toList.seleccion.visible && toList.seleccion.cantidad === 3, toList.seleccion);
       if (fixture.hasLink) check('lista: la carpeta con enlace se ofrece, con aviso', L.items.find((i) => i.nombre === 'Con enlace').enlaces, L.items.map((i) => [i.nombre, i.enlaces]));
       else report.skippedChecks = [...(report.skippedChecks || []), 'aviso de enlaces (no se pudo crear un enlace simbólico aquí)'];
-      check('lista: botón "Mover a disco externo…" desactivado con su explicación', L.moverDeshabilitado && L.moverTexto === 'Mover a disco externo…' && L.moverAyuda === 'Disponible en la próxima versión', L);
       check('lista: sin aviso de omitidos por permisos', !L.omitidosVisible || fixture.hasLink, L.omitidosVisible);
       await snapshot('lista.png');
 
@@ -549,7 +556,7 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
       const labels = menu.menu.items.filter((i) => !i.separador).map((i) => i.texto);
       check('clic derecho abre el menú con los 6 elementos esperados', JSON.stringify(labels) === JSON.stringify(['Entrar a la carpeta', 'Mostrar en el Explorador', 'Ver detalles', 'Copiar a otro disco…', 'Transferir a otro disco (mover)…', 'Ignorar esta carpeta']) && menu.menu.items.filter((i) => i.separador).length === 2, menu.menu.items);
       const byAction = Object.fromEntries(menu.menu.items.filter((i) => !i.separador).map((i) => [i.accion, i]));
-      check('"Copiar" y "Transferir" están desactivados con "Disponible en la próxima versión"; el resto activos', byAction.copy.deshabilitado && byAction.move.deshabilitado && byAction.copy.motivo === 'Disponible en la próxima versión' && byAction.move.motivo === 'Disponible en la próxima versión' && !byAction.enter.deshabilitado && !byAction.reveal.deshabilitado && !byAction.details.deshabilitado && !byAction.ignore.deshabilitado, byAction);
+      check('"Copiar" y "Transferir" están activos (como el resto)', !byAction.copy.deshabilitado && !byAction.move.deshabilitado && !byAction.enter.deshabilitado && !byAction.reveal.deshabilitado && !byAction.details.deshabilitado && !byAction.ignore.deshabilitado, byAction);
       check('el foco queda en el primer elemento del menú', menu.menu.foco === 'enter', menu.menu.foco);
 
       await realKey('Down');
