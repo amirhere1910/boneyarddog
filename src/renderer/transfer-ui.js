@@ -243,6 +243,7 @@
     const note = $('dlg-nota-formato');
     if (!d) {
       out.textContent = 'Todavía no elegiste un destino.';
+      delete out.dataset.ruta;
       note.hidden = true;
     } else {
       const free = d.freeBytes === null ? 'espacio libre desconocido' : `${W.formatBytes(d.freeBytes)} libres`;

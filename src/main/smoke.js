@@ -482,7 +482,7 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
     };
     const chooseDest = async () => {
       await clickId('dlg-otra-carpeta');
-      return waitDialog((d) => d.destino !== '', 'el destino elegido');
+      return waitDialog((d) => d.destino !== '' && !d.siguiente.d, 'el destino elegido');
     };
     const reals = new Map([wf.copiar, wf.papelera, wf.falla, wf.borrar, wf.sinConfirmar, wf.dejar].map((p) => [p, fs.realpathSync(p)])); // antes de que alguno desaparezca
     const copyOf = (batchText, source) => {
