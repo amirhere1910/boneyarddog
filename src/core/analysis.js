@@ -188,12 +188,18 @@ function computeInfo(node, isProtected, usage, memo) {
  * lastUsedDate) con UNA sola pasada. MODIFICA el árbol que recibe; pensado
  * para el árbol privado del servicio de análisis, que luego lista carpetas sin
  * recalcular. Los nodos sin datos o sin fecha quedan con `lastUsedMs: null`.
+ * También marca `subtreeIncomplete` y `subtreeHasLinks` (solo si son verdaderas).
  */
 function annotateLastUsed(tree, options) {
   if (!tree) return;
   const memo = new Map();
   computeInfo(tree, () => false, normalizeUsage(options), memo);
-  for (const [node, info] of memo) node.lastUsedMs = info.lastUsed;
+  for (const [node, info] of memo) {
+    node.lastUsedMs = info.lastUsed;
+    // Solo se escriben cuando son verdaderas (no cuestan memoria en el caso normal).
+    if (info.subtreeIncomplete) node.subtreeIncomplete = true;
+    if (info.subtreeHasLinks) node.subtreeHasLinks = true;
+  }
 }
 
 // ---------------------------------------------------------------------------

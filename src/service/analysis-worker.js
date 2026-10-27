@@ -23,6 +23,8 @@ const MAX_SELECTION = 10000;
 const MAX_FOLDERS = 500;
 const MAX_EXCLUDED = 500;
 const MAX_MIN_BYTES = 10 * 1024 ** 4; // 10 TB
+const DAY = 24 * 60 * 60 * 1000;
+const DEFAULT_MAP_MIN_BYTES = 100 * 1024 * 1024; // 100 MB
 
 let tree = null; // árbol del último escaneo completo
 let rootPath = null;
@@ -267,6 +269,172 @@ const handlers = {
     };
     folderCache = { key, value, at: Date.now() };
     return value;
+  },
+
+  /**
+   * Celdas del mapa de una carpeta: una por subcarpeta con tamaño >= minBytes, una de
+   * "archivos sueltos" si suman >= minBytes y UNA de "otras" con todo lo demás (bajo
+   * el mínimo o fuera del tope de celdas). La suma de las celdas es el tamaño de la
+   * carpeta: no se pierde nada. Las fechas usan las opciones de uso vigentes.
+   */
+  async getTreemap(folderPath, options = {}) {
+    const o = options === null || typeof options !== 'object' || Array.isArray(options) ? null : options;
+    if (!o) throw new TypeError('Las opciones deben ser un objeto');
+    const minBytes = o.minBytes === undefined ? DEFAULT_MAP_MIN_BYTES : o.minBytes;
+    const maxCells = o.maxCells === undefined ? 80 : o.maxCells;
+    if (!Number.isInteger(minBytes) || minBytes < 0 || minBytes > MAX_MIN_BYTES) throw new RangeError('minBytes debe ser un entero entre 0 y 10 TB');
+    if (!Number.isInteger(maxCells) || maxCells < 10 || maxCells > 200) throw new RangeError('maxCells debe ser un entero entre 10 y 200');
+    if (o.now !== undefined && !Number.isFinite(o.now)) throw new RangeError('now debe ser un número');
+    const now = o.now === undefined ? Date.now() : o.now;
+
+    const node = findNode(folderPath);
+    if (!node) throw unknownPath(folderPath);
+    if (node.type !== 'folder') throw new ServiceError('La ruta no es una carpeta', 'NO_ES_CARPETA');
+
+    const days = (ms) => (Number.isFinite(ms) ? Math.max(0, Math.floor((now - ms) / DAY)) : null);
+    const children = Array.isArray(node.children) ? node.children : [];
+    const folders = children.filter((c) => c.type === 'folder');
+    const files = children.filter((c) => c.type === 'file');
+    const maxDate = (list) => list.reduce((m, c) => (Number.isFinite(c.lastUsedMs) && (m === null || c.lastUsedMs > m) ? c.lastUsedMs : m), null);
+
+    const candidates = [];
+    const small = []; // por debajo del mínimo
+    for (const f of folders) (f.size >= minBytes ? candidates : small).push({ kind: 'folder', node: f, size: f.size });
+    const looseBytes = files.reduce((s, f) => s + f.size, 0);
+    const looseCell = files.length > 0 && looseBytes >= minBytes ? { kind: 'files', size: looseBytes } : null;
+    if (looseCell) candidates.push(looseCell);
+    candidates.sort((a, b) => b.size - a.size || (a.kind === 'folder' && b.kind === 'folder' ? (a.node.path < b.node.path ? -1 : 1) : a.kind < b.kind ? -1 : 1));
+
+    // Con "otras" el total de celdas no pasa de maxCells.
+    const needsOthers = small.length > 0 || (files.length > 0 && !looseCell) || candidates.length > maxCells;
+    const keepMax = needsOthers ? maxCells - 1 : maxCells;
+    const kept = candidates.slice(0, keepMax);
+    const leftover = candidates.slice(keepMax);
+
+    const cells = kept.map((c) => {
+      if (c.kind === 'files') {
+        return { kind: 'files', name: 'Archivos sueltos', size: c.size, fileCount: files.length, lastUsedMs: maxDate(files), daysUnused: days(maxDate(files)), protected: false, hasLinks: false, unreadable: false, canEnter: false };
+      }
+      const f = c.node;
+      const unreadable = Boolean(f.incomplete || f.partial || f.subtreeIncomplete);
+      return {
+        kind: 'folder',
+        name: f.name,
+        path: f.path,
+        size: f.size,
+        fileCount: f.fileCount,
+        lastUsedMs: f.lastUsedMs === undefined ? null : f.lastUsedMs,
+        daysUnused: days(f.lastUsedMs),
+        protected: isProtectedPath(f.path),
+        hasLinks: Boolean(f.hasLinks || f.subtreeHasLinks),
+        unreadable,
+        canEnter: Array.isArray(f.children) && f.children.some((x) => x.type === 'folder'),
+      };
+    });
+
+    // Todo lo que no tiene celda propia se agrupa.
+    const groupedFolders = small.map((c) => c.node).concat(leftover.filter((c) => c.kind === 'folder').map((c) => c.node));
+    const groupedFiles = looseCell && !leftover.includes(looseCell) ? [] : files;
+    const groupedAll = groupedFolders.concat(groupedFiles);
+    if (groupedAll.length > 0) {
+      const last = maxDate(groupedAll);
+      cells.push({
+        kind: 'others',
+        name: 'Otras',
+        size: groupedAll.reduce((s, c) => s + c.size, 0),
+        bytes: groupedAll.reduce((s, c) => s + c.size, 0),
+        count: groupedFolders.length,
+        looseFiles: groupedFiles.length,
+        fileCount: groupedAll.reduce((s, c) => s + c.fileCount, 0),
+        lastUsedMs: last,
+        daysUnused: days(last),
+        protected: false,
+        hasLinks: groupedFolders.some((f) => f.hasLinks || f.subtreeHasLinks),
+        unreadable: groupedFolders.some((f) => f.incomplete || f.partial || f.subtreeIncomplete),
+        canEnter: false,
+      });
+    }
+
+    // Migas de pan: desde la carpeta raíz escaneada hasta esta.
+    const breadcrumbs = [{ name: tree.name, path: tree.path }];
+    const rel = path.relative(rootPath, node.path);
+    if (rel !== '') {
+      let cur = tree;
+      for (const part of rel.split(path.sep)) {
+        cur = cur.children.find((c) => c.name === part);
+        breadcrumbs.push({ name: cur.name, path: cur.path });
+      }
+    }
+
+    return {
+      folder: {
+        path: node.path,
+        name: node.name,
+        size: node.size,
+        fileCount: node.fileCount,
+        lastUsedMs: node.lastUsedMs === undefined ? null : node.lastUsedMs,
+        daysUnused: days(node.lastUsedMs),
+      },
+      breadcrumbs,
+      parentPath: breadcrumbs.length > 1 ? breadcrumbs[breadcrumbs.length - 2].path : null,
+      totalBytes: node.size,
+      cells,
+    };
+  },
+
+  /** Detalles de una carpeta o archivo (se calcula al pedirlo, con un recorrido del subárbol). */
+  async getDetails(p, options = {}) {
+    const node = findNode(p);
+    if (!node) throw unknownPath(p);
+    const now = options && Number.isFinite(options.now) ? options.now : Date.now();
+    const buckets = { hasta30: { bytes: 0, files: 0 }, hasta90: { bytes: 0, files: 0 }, hasta180: { bytes: 0, files: 0 }, hasta365: { bytes: 0, files: 0 }, mas365: { bytes: 0, files: 0 }, desconocido: { bytes: 0, files: 0 } };
+    let folderCount = 0;
+    let newest = null;
+    let containsProtected = false;
+    const stack = [node];
+    while (stack.length > 0) {
+      const n = stack.pop();
+      if (n !== node && !containsProtected && isProtectedPath(n.path)) containsProtected = true;
+      if (n.type === 'folder') {
+        if (n !== node) folderCount++;
+        if (Array.isArray(n.children)) for (const c of n.children) stack.push(c);
+      } else {
+        const ms = n.lastUsedMs;
+        let b;
+        if (!Number.isFinite(ms)) b = buckets.desconocido;
+        else {
+          const d = (now - ms) / DAY;
+          b = d <= 30 ? buckets.hasta30 : d <= 90 ? buckets.hasta90 : d <= 180 ? buckets.hasta180 : d <= 365 ? buckets.hasta365 : buckets.mas365;
+          if (newest === null || ms > newest.ms || (ms === newest.ms && n.path < newest.path)) newest = { path: n.path, name: n.name, ms };
+        }
+        b.bytes += n.size;
+        b.files += 1;
+      }
+    }
+    const subfolders = (node.type === 'folder' && Array.isArray(node.children) ? node.children : []).filter((c) => c.type === 'folder');
+    const topSubfolders = subfolders
+      .slice()
+      .sort((a, b) => b.size - a.size || (a.path < b.path ? -1 : 1))
+      .slice(0, 5)
+      .map((f) => ({ name: f.name, path: f.path, size: f.size, fileCount: f.fileCount, lastUsedMs: f.lastUsedMs === undefined ? null : f.lastUsedMs }));
+    const last = node.lastUsedMs === undefined ? null : node.lastUsedMs;
+    return {
+      path: node.path,
+      name: node.name,
+      type: node.type,
+      size: node.size,
+      fileCount: node.fileCount,
+      folderCount,
+      lastUsedMs: last,
+      daysUnused: Number.isFinite(last) ? Math.max(0, Math.floor((now - last) / DAY)) : null,
+      newestFile: newest,
+      protected: isProtectedPath(node.path),
+      containsProtected,
+      hasLinks: Boolean(node.hasLinks || node.subtreeHasLinks),
+      unreadable: Boolean(node.incomplete || node.partial || node.subtreeIncomplete),
+      ageBuckets: buckets,
+      topSubfolders,
+    };
   },
 
   async summarizeSelection(paths) {
