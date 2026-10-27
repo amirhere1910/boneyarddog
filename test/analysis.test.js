@@ -444,3 +444,111 @@ test('summarize: selección vacía o nula', () => {
   assert.equal(summarize([]).totalBytes, 0);
   assert.equal(summarize(null).totalBytes, 0);
 });
+
+// --- Integración con las protecciones reales (rutas de Windows) -------------
+
+test('findStale con protecciones reales: Windows y la carpeta de usuario no se ofrecen; lo demás sí', () => {
+  const old = { atime: daysAgo(900), mtime: daysAgo(900) };
+  const tree = folder('C:\\', [
+    folder('C:\\Windows', [folder('C:\\Windows\\System32', [file('C:\\Windows\\System32\\k.dll', 1000, old)])]),
+    folder('C:\\Users', [
+      folder('C:\\Users\\amir', [
+        folder('C:\\Users\\amir\\Documents', [file('C:\\Users\\amir\\Documents\\tesis.doc', 500, old)]),
+        file('C:\\Users\\amir\\NTUSER.DAT', 40, old),
+      ]),
+    ]),
+    folder('C:\\Temp', [file('C:\\Temp\\basura.tmp', 300, old)]),
+    folder('C:\\WindowsOld', [file('C:\\WindowsOld\\viejo.bak', 200, old)]),
+    file('C:\\pagefile.sys', 9999, old),
+  ]);
+
+  const { items, protectedSkipped } = findStale(tree, { olderThanDays: 365, now: NOW });
+  assert.deepEqual(
+    items.map((i) => i.path),
+    // Orden: por tamaño, de mayor a menor.
+    ['C:\\Users\\amir\\Documents', 'C:\\Temp', 'C:\\WindowsOld', 'C:\\Users\\amir\\NTUSER.DAT'],
+  );
+  // Nada de lo ofrecido está protegido ni contiene algo protegido.
+  const { isProtectedPath } = require('../src/core/protected');
+  for (const i of items) {
+    for (const n of allNodes(i.node)) assert.equal(isProtectedPath(n.path), false, n.path);
+  }
+  const reasons = Object.fromEntries(protectedSkipped.map((p) => [p.path, p.reason]));
+  assert.equal(reasons['C:\\'], 'protegido');
+  assert.equal(reasons['C:\\Windows'], 'protegido');
+  assert.equal(reasons['C:\\pagefile.sys'], 'protegido');
+  assert.equal(reasons['C:\\Users'], 'protegido');
+  assert.equal(reasons['C:\\Users\\amir'], 'protegido');
+  assert.ok(!('C:\\Windows\\System32' in reasons), 'lo totalmente protegido no se desglosa');
+});
+
+test('findStale con protecciones reales: una carpeta que contiene algo protegido no sale entera', () => {
+  const old = { atime: daysAgo(900), mtime: daysAgo(900) };
+  const tree = folder('D:\\', [
+    folder('D:\\Mezcla', [
+      file('D:\\Mezcla\\libre.bin', 70, old),
+      folder('D:\\Mezcla\\Windows', [file('D:\\Mezcla\\Windows\\x.dll', 60, old)]), // anidada: NO protegida
+    ]),
+    folder('D:\\Disco', [file('D:\\Disco\\a', 10, old), folder('D:\\Disco\\Program Files', [file('D:\\Disco\\Program Files\\b', 50, old)])]),
+  ]);
+  const { items, protectedSkipped } = findStale(tree, { olderThanDays: 365, now: NOW });
+  // D:\Mezcla\Windows no está en la raíz de la unidad, así que no es protegida: sale la carpeta Mezcla entera.
+  assert.ok(items.some((i) => i.path === 'D:\\Mezcla'));
+  // D:\Disco contiene D:\Disco\Program Files (anidada, tampoco protegida): sale entera también.
+  assert.ok(items.some((i) => i.path === 'D:\\Disco'));
+  // La raíz D:\ está protegida, así que no sale como una sola entrada.
+  assert.ok(!items.some((i) => i.path === 'D:\\'));
+  assert.equal(protectedSkipped[0].path, 'D:\\');
+});
+
+test('findStale con protecciones reales: la raíz de un disco con carpeta de sistema real se desglosa', () => {
+  const old = { atime: daysAgo(900), mtime: daysAgo(900) };
+  const tree = folder('D:\\', [
+    folder('D:\\Windows', [file('D:\\Windows\\a.dll', 10, old)]),
+    folder('D:\\Fotos', [file('D:\\Fotos\\a.jpg', 20, old)]),
+  ]);
+  const { items, protectedSkipped } = findStale(tree, { olderThanDays: 365, now: NOW });
+  assert.deepEqual(items.map((i) => i.path), ['D:\\Fotos']);
+  assert.deepEqual(protectedSkipped.map((p) => [p.path, p.reason]).sort(), [
+    ['D:\\', 'protegido'],
+    ['D:\\Windows', 'protegido'],
+  ]);
+});
+
+test('summarize con protecciones reales: excluye lo protegido y no cuenta doble', () => {
+  const win = folder('C:\\Windows', [file('C:\\Windows\\a.dll', 1000)]);
+  const docs = folder('C:\\Users\\amir\\Documents', [file('C:\\Users\\amir\\Documents\\t.doc', 500)]);
+  const amir = folder('C:\\Users\\amir', [docs]);
+  const users = folder('C:\\Users', [amir]);
+  const temp = folder('C:\\Temp', [file('C:\\Temp\\b.tmp', 300)]);
+  const pagefile = file('C:\\pagefile.sys', 9999);
+  const dentroTemp = file('C:\\Temp\\b.tmp', 300);
+
+  const r = summarize([win, amir, users, docs, temp, dentroTemp, pagefile]);
+  assert.equal(r.totalBytes, 500 + 300);
+  assert.deepEqual(r.counted.map((n) => n.path).sort(), ['C:\\Temp', 'C:\\Users\\amir\\Documents']);
+  const reasons = Object.fromEntries(r.excluded.map((e) => [e.node.path, e.reason]));
+  assert.equal(reasons['C:\\Windows'], 'protegido');
+  assert.equal(reasons['C:\\Users\\amir'], 'protegido');
+  assert.equal(reasons['C:\\Users'], 'protegido');
+  assert.equal(reasons['C:\\pagefile.sys'], 'protegido');
+  assert.equal(r.excluded.find((e) => e.node === dentroTemp).reason, 'dentro-de-otro-seleccionado');
+});
+
+test('summarize con protecciones reales: carpeta que contiene algo protegido se excluye', () => {
+  const sys = folder('D:\\Mezcla\\$Recycle.Bin', [file('D:\\Mezcla\\$Recycle.Bin\\x', 5)]);
+  // $Recycle.Bin solo es protegida en la raíz de la unidad; aquí está anidada y es libre.
+  assert.equal(summarize([sys]).totalBytes, 5);
+  const enRaiz = folder('D:\\', [folder('D:\\$Recycle.Bin', [file('D:\\$Recycle.Bin\\x', 5)]), file('D:\\a', 7)]);
+  const r = summarize([enRaiz]);
+  assert.equal(r.totalBytes, 0);
+  assert.equal(r.excluded[0].reason, 'protegido'); // D:\ es la raíz de la unidad
+});
+
+test('escaneo real + protecciones reales: las carpetas temporales de Linux/Windows no se marcan como protegidas', async (t) => {
+  const { root } = await sampleStaleTree(t);
+  const { tree } = await scan(root);
+  const r = findStale(tree, { olderThanDays: 365, now: NOW });
+  assert.equal(r.protectedSkipped.length, 0);
+  assert.ok(r.items.length > 0);
+});

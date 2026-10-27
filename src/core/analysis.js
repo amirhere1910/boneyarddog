@@ -6,18 +6,19 @@
  *
  * Fechas: números en milisegundos desde 1970 (igual que el árbol).
  *
- * PROTECCIONES: findStale y summarize reciben `isProtected(ruta) -> boolean`
- * (opción `isProtected`). Un nodo protegido, o una carpeta que contiene algo
+ * PROTECCIONES: findStale y summarize usan `isProtected(ruta) -> boolean`
+ * (por defecto isProtectedPath de protected.js; se puede reemplazar con la
+ * opción `isProtected`). Un nodo protegido, o una carpeta que contiene algo
  * protegido, NUNCA se ofrece como un todo para eliminar o mover: se informa
  * aparte y se excluye de los totales.
  */
 
 const path = require('node:path');
+const { isProtectedPath } = require('./protected');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-// Se reemplaza por la lista real de protected.js (ver Parte 4).
-const defaultIsProtected = () => false;
+const defaultIsProtected = isProtectedPath;
 
 function isFile(node) {
   return node.type === 'file';
@@ -132,6 +133,7 @@ function lastUsedDate(node, { ignoreAtime = false } = {}) {
  *  - lastUsed: ver lastUsedDate
  *  - selfProtected: la ruta del nodo está protegida
  *  - subtreeProtected: el nodo o algo dentro de él está protegido
+ *  - fullyProtected: el nodo y TODO lo que contiene está protegido
  */
 function computeInfo(node, isProtected, ignoreAtime, memo) {
   const cached = memo.get(node);
@@ -139,6 +141,7 @@ function computeInfo(node, isProtected, ignoreAtime, memo) {
   const selfProtected = Boolean(isProtected(node.path));
   let lastUsed;
   let subtreeProtected = selfProtected;
+  let fullyProtected = selfProtected;
   if (isFile(node)) {
     lastUsed = maxFinite(ignoreAtime ? [node.mtimeMs] : [node.atimeMs, node.mtimeMs]);
   } else if (node.children.length === 0) {
@@ -149,10 +152,11 @@ function computeInfo(node, isProtected, ignoreAtime, memo) {
       const info = computeInfo(child, isProtected, ignoreAtime, memo);
       dates.push(info.lastUsed);
       if (info.subtreeProtected) subtreeProtected = true;
+      if (!info.fullyProtected) fullyProtected = false;
     }
     lastUsed = maxFinite(dates);
   }
-  const info = { lastUsed, selfProtected, subtreeProtected };
+  const info = { lastUsed, selfProtected, subtreeProtected, fullyProtected };
   memo.set(node, info);
   return info;
 }
@@ -170,8 +174,9 @@ function computeInfo(node, isProtected, ignoreAtime, memo) {
  *   no está abandonada y se miran sus hijos por separado.
  * - Las entradas devueltas nunca se solapan entre sí.
  * - Protegidos: un nodo protegido, o una carpeta con algo protegido dentro,
- *   no se ofrece completo; va a `protectedSkipped`. De esa carpeta se siguen
- *   revisando sus hijos por separado.
+ *   no se ofrece completo; va a `protectedSkipped` (reason: 'protegido' o
+ *   'contiene-protegidos'). De esa carpeta se siguen revisando sus hijos por
+ *   separado, salvo que todo su contenido esté protegido.
  * - Las carpetas que no se pudieron leer (`incomplete`) no se ofrecen enteras.
  * - Con minSizeBytes = 0 también salen las carpetas vacías viejas.
  *
@@ -213,6 +218,7 @@ function findStale(tree, opts = {}) {
 
     if (info.selfProtected) {
       protectedSkipped.push(skipEntry(node, 'protegido'));
+      if (info.fullyProtected) return; // todo lo de adentro también: no se desglosa
     } else if (info.subtreeProtected) {
       protectedSkipped.push(skipEntry(node, 'contiene-protegidos'));
     } else if (!node.incomplete) {
