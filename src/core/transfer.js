@@ -156,6 +156,16 @@ function createTransferEngine(deps = {}) {
       }
     });
 
+  /** ¿La ruta real de `p` sigue siendo `p`? (si un enlace o punto de unión la desvió, no). */
+  async function stillItsOwnRealPath(p) {
+    try {
+      const r = await fsp.realpath(p);
+      return r === p || (R.isInside(r, p) && R.isInside(p, r));
+    } catch {
+      return false;
+    }
+  }
+
   // -------------------------------------------------------- eliminaciones (únicas)
 
   /**
@@ -269,6 +279,29 @@ function createTransferEngine(deps = {}) {
     return { entries, links, unreadable, special, protectedHits };
   }
 
+  /**
+   * ¿El origen sigue EXACTAMENTE como se planificó? Devuelve null si sí, o el motivo si no:
+   * misma ruta real (ningún enlace la desvió), no protegido, y mismo recorrido en vivo
+   * (nombres, tipos, tamaños y fechas), sin enlaces ni elementos nuevos ilegibles.
+   */
+  async function sourceChangeReason(folder) {
+    try {
+      if (!(await stillItsOwnRealPath(folder.source))) return 'su ruta real cambió: un enlace o punto de unión la desvía a otro sitio';
+      if (isProtected(folder.source)) return 'ahora está en una zona protegida';
+      const again = await walk(folder.source, { checkProtected: false });
+      if (again.links.length || again.unreadable.length || again.special.length) return 'aparecieron enlaces o elementos ilegibles';
+      if (again.entries.length !== folder.entries.length) return 'cambió la cantidad de archivos o carpetas';
+      for (let i = 0; i < again.entries.length; i++) {
+        const a = again.entries[i];
+        const b = folder.entries[i];
+        if (a.rel !== b.rel || a.type !== b.type || a.size !== b.size || a.mtimeMs !== b.mtimeMs) return `cambió «${a.rel}»`;
+      }
+      return null;
+    } catch (err) {
+      return `no se pudo volver a leer el origen (${err.code || err.message})`;
+    }
+  }
+
   // -------------------------------------------------------------------- preflight
 
   /**
@@ -307,27 +340,51 @@ function createTransferEngine(deps = {}) {
     }
     if (blockers.length) return result(null);
 
-    // Origen protegido: se vuelve a comprobar AHORA (no solo al listar).
-    for (const s of srcList) {
-      if (isProtected(s)) block('origen-protegido', `«${s}» está protegido por el sistema y no se puede copiar ni mover.`, { ruta: s });
-    }
-    // Orígenes repetidos o anidados.
-    for (let i = 0; i < srcList.length; i++) {
-      for (let j = 0; j < srcList.length; j++) {
-        if (i !== j && R.isInside(srcList[i], srcList[j]) && !(R.isInside(srcList[j], srcList[i]) && j < i)) {
-          block('origen-anidado', `«${srcList[i]}» está dentro de otra carpeta de origen («${srcList[j]}»).`, { ruta: srcList[i] });
+    // Rutas REALES: un enlace (o punto de unión) en medio de la ruta puede llevar a otro sitio, y las
+    // protecciones y las comprobaciones «dentro de» comparan texto. Todo se decide con la ruta real.
+    const realOf = async (p) => {
+      try {
+        return await fsp.realpath(p);
+      } catch {
+        return null; // no existe: se informa más abajo
+      }
+    };
+    const givenList = srcList;
+    const realList = await Promise.all(givenList.map(realOf));
+    const effList = givenList.map((g, i) => realList[i] || g); // ruta real, o la dada si no existe
+    const destReal = await realOf(destinationRoot);
+    const destEff = destReal || destinationRoot;
+    const same = (a, b) => a === b || (R.isInside(a, b) && R.isInside(b, a));
+
+    // Origen protegido: se vuelve a comprobar AHORA (no solo al listar), con la ruta dada Y la real.
+    givenList.forEach((g, i) => {
+      if (isProtected(g)) block('origen-protegido', `«${g}» está protegido por el sistema y no se puede copiar ni mover.`, { ruta: g });
+      else if (!same(effList[i], g) && isProtected(effList[i])) {
+        block('origen-protegido', `«${g}» pasa por un enlace y en realidad es «${effList[i]}», que está protegido por el sistema: no se puede copiar ni mover.`, { ruta: g, rutaReal: effList[i] });
+      }
+    });
+    // Orígenes repetidos o anidados (por ruta real).
+    for (let i = 0; i < effList.length; i++) {
+      for (let j = 0; j < effList.length; j++) {
+        if (i !== j && R.isInside(effList[i], effList[j]) && !(R.isInside(effList[j], effList[i]) && j < i)) {
+          block('origen-anidado', `«${givenList[i]}» está dentro de otra carpeta de origen («${givenList[j]}»).`, { ruta: givenList[i] });
         }
       }
     }
     if (isProtected(destinationRoot)) block('destino-protegido', 'El destino está en una carpeta protegida del sistema.', { ruta: destinationRoot });
-    for (const s of srcList) {
-      if (R.isInside(destinationRoot, s)) block('destino-dentro-del-origen', `El destino está dentro de la carpeta de origen «${s}» (o es la misma).`, { ruta: s });
+    else if (destReal && !same(destReal, destinationRoot) && isProtected(destReal)) {
+      block('destino-protegido', `El destino pasa por un enlace y en realidad es «${destReal}», una carpeta protegida del sistema.`, { ruta: destinationRoot, rutaReal: destReal });
     }
+    givenList.forEach((g, i) => {
+      if (R.isInside(destinationRoot, g) || R.isInside(destEff, effList[i])) {
+        block('destino-dentro-del-origen', `El destino está dentro de la carpeta de origen «${g}» (o es la misma)${same(destEff, destinationRoot) ? '' : `: pasa por un enlace y en realidad es «${destEff}»`}.`, { ruta: g });
+      }
+    });
 
     // Destino: carpeta existente y escribible (sonda propia).
     let destStat = null;
     try {
-      destStat = await fsp.stat(destinationRoot);
+      destStat = await fsp.stat(destEff);
     } catch {
       block('destino-no-existe', 'La carpeta de destino no existe o no está disponible (¿el disco está conectado?).');
     }
@@ -335,7 +392,7 @@ function createTransferEngine(deps = {}) {
     if (blockers.length) return result(null);
 
     const probeName = `.byd-sonda-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
-    const probePath = nodePath.join(destinationRoot, probeName);
+    const probePath = nodePath.join(destEff, probeName);
     let probeCreated = false;
     try {
       const h = await fsp.open(probePath, 'wx');
@@ -359,7 +416,8 @@ function createTransferEngine(deps = {}) {
 
     // Orígenes: carpeta real, sin enlaces en la raíz.
     const walks = [];
-    for (const s of srcList) {
+    for (let i = 0; i < givenList.length; i++) {
+      const s = givenList[i];
       let st;
       try {
         st = await fsp.lstat(s);
@@ -378,7 +436,7 @@ function createTransferEngine(deps = {}) {
         walks.push(null);
         continue;
       }
-      const w = await walk(s);
+      const w = await walk(effList[i]);
       if (w.protectedHits.length) {
         block('origen-contiene-protegidos', `«${s}» contiene elementos protegidos del sistema.`, { ruta: s, ejemplos: w.protectedHits.slice(0, 5) });
       }
@@ -389,7 +447,7 @@ function createTransferEngine(deps = {}) {
     // Información del destino (formato, espacio).
     let info = unknownVolume();
     try {
-      info = (await volumeInfo(destinationRoot)) || unknownVolume();
+      info = (await volumeInfo(destEff)) || unknownVolume();
     } catch {
       info = unknownVolume();
     }
@@ -406,8 +464,8 @@ function createTransferEngine(deps = {}) {
     const manyEntries = [];
     const longPaths = [];
     const name0 = batchName(now());
-    const batchPlanned = nodePath.join(destinationRoot, BATCH_DIR, name0);
-    const planSources = srcList.map((s, i) => {
+    const batchPlanned = nodePath.join(destEff, BATCH_DIR, name0);
+    const planSources = effList.map((s, i) => {
       const w = walks[i];
       const { drive, parts } = splitAbsolute(s);
       const destBase = nodePath.join(batchPlanned, drive, ...parts);
@@ -446,7 +504,8 @@ function createTransferEngine(deps = {}) {
       bytes += sBytes;
       return {
         index: i,
-        source: s,
+        source: s, // ruta REAL
+        requested: givenList[i], // la que se pidió
         driveFolder: drive,
         destParts: [drive, ...parts],
         files: sFiles,
@@ -485,9 +544,9 @@ function createTransferEngine(deps = {}) {
     if (allLinks.length || allUnreadable.length || allSpecial.length) {
       if (mode === 'move') warn('original-no-se-retirara', 'Las carpetas con enlaces, elementos ilegibles o especiales se copian, pero su original NO se retira (se perdería lo que no se copió).');
     }
-    const dests = await Promise.all(srcList.map(async (s) => ({ s, dev: (await fsp.stat(s)).dev })));
-    const destDev = destStat.dev;
-    const sameDisk = dests.filter((d) => d.dev === destDev || R.sameVolume(d.s, destinationRoot));
+    const dests = await Promise.all(effList.map(async (s) => ({ s, dev: (await fsp.stat(s)).dev })));
+    const destDev = (await fsp.stat(destEff)).dev;
+    const sameDisk = dests.filter((d) => d.dev === destDev || R.sameVolume(d.s, destEff));
     if (sameDisk.length) warn('mismo-disco', 'El origen y el destino están en el mismo disco: no liberarás espacio con esto.', { origenes: sameDisk.map((d) => d.s) });
     if (longPaths.length) warn('ruta-larga', 'Algunas rutas de destino superan 240 caracteres; el Explorador de Windows puede fallar con ellas (límite 260).', { ejemplos: longPaths.slice(0, 5), cantidad: longPaths.length });
     if (manyEntries.length) warn('carpeta-con-muchas-entradas', `En ${fsName} las carpetas con muchas entradas (unas ${limits.maxEntriesPerFolder}) se vuelven lentas o fallan.`, { carpetas: manyEntries.slice(0, 20) });
@@ -496,7 +555,7 @@ function createTransferEngine(deps = {}) {
     for (const key of ['OneDrive', 'OneDriveConsumer', 'OneDriveCommercial']) {
       const od = env[key];
       if (typeof od === 'string' && od !== '') {
-        const inOd = srcList.filter((s) => R.isInside(s, od));
+        const inOd = givenList.filter((g, i) => R.isInside(g, od) || R.isInside(effList[i], od));
         if (inOd.length) warn('onedrive', 'Esta carpeta está dentro de OneDrive: los archivos que están solo en la nube se descargarían al copiarlos.', { origenes: inOd });
         break;
       }
@@ -507,7 +566,7 @@ function createTransferEngine(deps = {}) {
     if (mode === 'move' && disposal === 'papelera') {
       let srcInfo = unknownVolume();
       try {
-        srcInfo = (await volumeInfo(srcList[0])) || unknownVolume();
+        srcInfo = (await volumeInfo(effList[0])) || unknownVolume();
       } catch {
         srcInfo = unknownVolume();
       }
@@ -526,7 +585,7 @@ function createTransferEngine(deps = {}) {
       mode,
       verify,
       disposal: disposalInfo.elegida,
-      destinationRoot,
+      destinationRoot: destEff, // ruta REAL
       batchName: name0,
       fileSystem: fsName,
       sources: planSources,
@@ -774,6 +833,7 @@ function createTransferEngine(deps = {}) {
       const fileHashes = new Map();
       const result = {
         origen: folder.source,
+        solicitado: folder.requested || folder.source,
         destino: destBase,
         resultado: 'copiada-verificada',
         motivo: null,
@@ -783,6 +843,7 @@ function createTransferEngine(deps = {}) {
       };
       const man = {
         origen: folder.source,
+        origenSolicitado: folder.requested || folder.source,
         destino: folder.destParts.join('/'),
         resultado: null,
         archivos,
@@ -965,24 +1026,7 @@ function createTransferEngine(deps = {}) {
         } else {
           if (hooks.afterVerify) await hooks.afterVerify({ folder }); // solo pruebas
           // El origen debe seguir EXACTAMENTE como se planificó.
-          let changed = null;
-          try {
-            const again = await walk(folder.source, { checkProtected: false });
-            if (again.links.length || again.unreadable.length || again.special.length) changed = 'aparecieron enlaces o elementos ilegibles';
-            else if (again.entries.length !== folder.entries.length) changed = 'cambió la cantidad de archivos o carpetas';
-            else {
-              for (let i = 0; i < again.entries.length; i++) {
-                const a = again.entries[i];
-                const b = folder.entries[i];
-                if (a.rel !== b.rel || a.type !== b.type || a.size !== b.size || a.mtimeMs !== b.mtimeMs) {
-                  changed = `cambió «${a.rel}»`;
-                  break;
-                }
-              }
-            }
-          } catch (err) {
-            changed = `no se pudo volver a leer el origen (${err.code || err.message})`;
-          }
+          const changed = await sourceChangeReason(folder);
           if (changed) {
             keep(`El origen cambió desde que se planificó (${changed}): no se toca`);
           } else {

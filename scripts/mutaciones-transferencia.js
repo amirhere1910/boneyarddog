@@ -51,6 +51,9 @@ const MUTATIONS = [
   { nombre: '(extra) retirar el original aunque haya enlaces o ilegibles', fn: once('} else if (folder.links.length || folder.unreadable.length || folder.special.length) {', '} else if (false) {') },
   { nombre: '(extra) quitarCopiado sin negarse cuando ya se retiró un original', fn: once("if (disposed.length) throw new Error(", 'if (false) throw new Error(') },
   { nombre: '(extra) no revisar que el destino no esté dentro del origen', fn: once("if (R.isInside(destinationRoot, s)) block('destino-dentro-del-origen'", "if (false) block('destino-dentro-del-origen'") },
+  { nombre: '(3B) ignorar realpath en preflight (comparar solo texto)', fn: once('const realList = await Promise.all(givenList.map(realOf));\n', 'const realList = givenList.map(() => null);\n') },
+  { nombre: '(3B) ignorar realpath del destino en preflight', fn: once('const destReal = await realOf(destinationRoot);', 'const destReal = null;') },
+  { nombre: '(3B) no volver a resolver realpath del origen antes de retirar', fn: once('if (!(await stillItsOwnRealPath(folder.source))) return', 'if (false) return') },
   { nombre: '(extra) no avisar ni bloquear la falta de espacio', fn: once('if (info.freeBytes < required) {', 'if (false) {') },
 ];
 

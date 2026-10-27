@@ -1142,3 +1142,140 @@ test('el motor y las reglas solo usan módulos de Node (sin dependencias ni chil
     assert.doesNotMatch(source, /child_process/);
   }
 });
+
+// ================================================== rutas reales (enlaces en medio de la ruta)
+
+function linkOrSkip(t, target, linkPath) {
+  try {
+    fs.symlinkSync(target, linkPath, 'dir');
+    return true;
+  } catch (err) {
+    t.skip(`No se pueden crear enlaces simbólicos aquí (${err.code})`);
+    return false;
+  }
+}
+
+test('rutas reales: un origen alcanzado POR UN ENLACE hacia una carpeta protegida se bloquea (y no se escribe ni se retira nada)', async (t) => {
+  const base = tmpDir(t);
+  const prot = path.join(base, 'zona-protegida');
+  const secreto = path.join(prot, 'Documentos');
+  write(path.join(secreto, 'a.txt'), 'importante', 100);
+  const enlace = path.join(base, 'atajo');
+  if (!linkOrSkip(t, prot, enlace)) return;
+  const dest = makeDest(base);
+  const before = snapshot(prot);
+  const { engine, trashed } = makeEngine(base, { isProtected: (p) => p === prot || p.startsWith(prot + path.sep) });
+  // Sin el truco, la ruta protegida se bloquea (control).
+  assert.ok(codes((await engine.preflight(moveOpts(secreto, dest, 'papelera'))).blockers).includes('origen-protegido'));
+  // Con el enlace en medio, la ruta TEXTUAL parece inofensiva: debe bloquearse igual.
+  const viaEnlace = path.join(enlace, 'Documentos');
+  const pf = await engine.preflight(moveOpts(viaEnlace, dest, 'papelera'));
+  const b = pf.blockers.find((x) => x.code === 'origen-protegido');
+  assert.ok(b, 'bloqueado');
+  assert.equal(b.rutaReal, secreto);
+  assert.match(b.message, /enlace/);
+  assert.equal(pf.plan, null);
+  assert.deepEqual(fs.readdirSync(dest), [], 'no se escribió nada');
+  assert.deepEqual(trashed, []);
+  assert.deepEqual(snapshot(prot), before);
+});
+
+test('rutas reales: un DESTINO que es un enlace hacia el interior del origen se bloquea sin escribir nada', async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const dentro = path.join(src, 'sub');
+  const enlace = path.join(base, 'destino-trampa');
+  if (!linkOrSkip(t, dentro, enlace)) return;
+  const before = snapshot(src);
+  const { engine } = makeEngine(base);
+  const pf = await engine.preflight(copyOpts(src, enlace));
+  const b = pf.blockers.find((x) => x.code === 'destino-dentro-del-origen');
+  assert.ok(b, 'bloqueado');
+  assert.match(b.message, /enlace/);
+  assert.equal(pf.plan, null);
+  assert.deepEqual(snapshot(src), before, 'ni siquiera la sonda de escritura tocó el origen');
+});
+
+test('rutas reales: un destino que es un enlace hacia una carpeta protegida se bloquea', async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const prot = path.join(base, 'zona-protegida');
+  fs.mkdirSync(prot);
+  const enlace = path.join(base, 'destino-trampa');
+  if (!linkOrSkip(t, prot, enlace)) return;
+  const { engine } = makeEngine(base, { isProtected: (p) => p === prot || p.startsWith(prot + path.sep) });
+  const pf = await engine.preflight(copyOpts(src, enlace));
+  assert.ok(codes(pf.blockers).includes('destino-protegido'));
+  assert.deepEqual(fs.readdirSync(prot), []);
+});
+
+test('rutas reales: un enlace inofensivo en medio de la ruta se resuelve, se copia y el plan y el manifiesto guardan la ruta REAL', async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const raizOrigen = path.join(base, 'origen');
+  const enlaceO = path.join(base, 'atajo-origen');
+  const real = makeDest(base);
+  const enlaceD = path.join(base, 'atajo-destino');
+  if (!linkOrSkip(t, raizOrigen, enlaceO) || !linkOrSkip(t, real, enlaceD)) return;
+  const pedido = path.join(enlaceO, path.basename(src));
+  const before = snapshot(src);
+  const { engine } = makeEngine(base);
+  const pf = await engine.preflight(copyOpts(pedido, enlaceD));
+  assert.deepEqual(pf.blockers, []);
+  assert.equal(pf.plan.sources[0].source, fs.realpathSync(src), 'el plan guarda la ruta real del origen');
+  assert.equal(pf.plan.sources[0].requested, pedido);
+  assert.equal(pf.plan.destinationRoot, fs.realpathSync(real), 'y la real del destino');
+  const r = await engine.run(pf.plan);
+  assert.equal(r.carpetas[0].resultado, 'copiada-verificada');
+  assert.equal(r.carpetas[0].origen, fs.realpathSync(src));
+  assert.equal(r.carpetas[0].solicitado, pedido);
+  assert.ok(r.batchFolder.startsWith(fs.realpathSync(real) + path.sep), 'se escribió en la carpeta real');
+  assert.deepEqual(snapshot(r.carpetas[0].destino), before);
+  const man = JSON.parse(fs.readFileSync(path.join(r.batchFolder, 'MANIFIESTO.json'), 'utf8'));
+  assert.equal(man.carpetas[0].origen, fs.realpathSync(src));
+  assert.equal(man.destino, fs.realpathSync(real));
+});
+
+test('rutas reales: dos orígenes que son la misma carpeta por caminos distintos cuentan como anidados', async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const enlace = path.join(base, 'atajo-origen');
+  if (!linkOrSkip(t, path.join(base, 'origen'), enlace)) return;
+  const dest = makeDest(base);
+  const { engine } = makeEngine(base);
+  const pf = await engine.preflight({ sources: [src, path.join(enlace, path.basename(src))], destinationRoot: dest, mode: 'copy', verify: 'full' });
+  assert.ok(codes(pf.blockers).includes('origen-anidado'));
+});
+
+test('rutas reales: ANTES de retirar se vuelve a resolver la ruta real; si un enlace desvió el origen, no se toca', async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const dest = makeDest(base);
+  const respaldo = `${src}-respaldo`;
+  const { engine, trashed } = makeEngine(base);
+  const pf = await engine.preflight(moveOpts(src, dest, 'papelera'));
+  assert.deepEqual(pf.blockers, []);
+  let linked = true;
+  // Entre verificar y retirar, la carpeta se reemplaza por un enlace hacia una carpeta IDÉNTICA: el recorrido en vivo no vería diferencia.
+  const r = await engine.run(pf.plan, {
+    hooks: {
+      afterVerify: async () => {
+        fs.renameSync(src, respaldo);
+        try {
+          fs.symlinkSync(respaldo, src, 'dir');
+        } catch {
+          linked = false;
+          fs.renameSync(respaldo, src);
+        }
+      },
+    },
+  });
+  if (!linked) {
+    t.skip('No se pueden crear enlaces simbólicos aquí');
+    return;
+  }
+  assert.equal(r.carpetas[0].resultado, 'original-sin-tocar');
+  assert.match(r.carpetas[0].motivo, /ruta real cambió/);
+  assert.deepEqual(trashed, [], 'la Papelera ni se llamó');
+  assert.ok(fs.existsSync(respaldo));
+});
