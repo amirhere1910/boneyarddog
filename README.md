@@ -13,7 +13,7 @@ El plan y el estado de cada fase están en [`docs/ALCANCE.md`](docs/ALCANCE.md).
 
 ## Pruebas
 
-Requiere Node.js 20 o superior. No hay dependencias que instalar en esta fase.
+Requiere Node.js 22 o superior. No hay dependencias que instalar en esta fase.
 
 ```
 npm test

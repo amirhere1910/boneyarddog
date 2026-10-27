@@ -57,7 +57,6 @@ test('la carpeta de usuario está protegida, pero no su contenido', () => {
       'C:\\Users\\amir\\Downloads\\instalador.exe',
       'c:/users/amir/documents/Windows',
       'C:\\Users\\amir\\Pictures\\2024\\foto.jpg',
-      'C:\\Users\\amir\\AppData', // decisión: no está en la lista (ver docs)
     ],
     false,
   );
@@ -186,4 +185,74 @@ test('rutas estilo Linux/temporales (como las de las pruebas) no se marcan', () 
   check(['/', '\\'], true);
   // Ruta sin unidad que parece de sistema: se evalúa en la raíz de la unidad actual.
   check(['/Windows/System32', '\\Windows'], true);
+});
+
+test('protecciones nuevas: AppData, NTUSER.DAT*, .ssh y carpetas de instalación/actualización', () => {
+  check(
+    [
+      'C:\\Users\\amir\\AppData',
+      'C:\\Users\\amir\\AppData\\Roaming\\Foo',
+      'C:\\Users\\amir\\AppData\\Local\\Google\\Chrome\\User Data',
+      'D:\\Users\\Otro\\appdata\\local',
+      'C:\\Users\\amir\\NTUSER.DAT',
+      'C:\\Users\\amir\\ntuser.dat.LOG1',
+      'C:\\Users\\amir\\NTUSER.DAT{6cced2f1-6e01-11de-8bed-001e0bcd1824}.TM.blf',
+      'C:\\Users\\amir\\ntuser.ini',
+      'C:\\Users\\amir\\.ssh',
+      'C:\\Users\\amir\\.ssh\\id_rsa',
+      'c:/users/AMIR/.SSH/known_hosts',
+      'C:\\Users\\amir\\.gnupg\\pubring.kbx',
+      'C:\\Users\\amir\\.aws\\credentials',
+      'C:\\Config.Msi',
+      'C:\\Config.Msi\\x.rbf',
+      'C:\\$Windows.~BT',
+      'C:\\$Windows.~BT\\Sources',
+      'C:\\$Windows.~WS',
+      'C:\\$GetCurrent',
+      'C:\\$SysReset\\Logs',
+      'C:\\MSOCache',
+      'C:\\MSOCache\\All Users',
+      'C:\\Documents and Settings',
+      'D:\\Documents and Settings\\x',
+      // con trucos de ruta
+      'C:\\Users\\amir\\Documents\\..\\AppData\\Roaming',
+      'C:\\Users\\amir\\AppData \\Roaming',
+      'C:\\Users\\amir\\.ssh.\\id_rsa',
+    ],
+    true,
+  );
+});
+
+test('siguen SIN protección: Documents, Desktop, Downloads de cualquier usuario y parecidos', () => {
+  check(
+    [
+      'C:\\Users\\amir\\Documents',
+      'C:\\Users\\amir\\Documents\\informe.docx',
+      'C:\\Users\\amir\\Desktop',
+      'C:\\Users\\maria\\Desktop\\x.txt',
+      'C:\\Users\\amir\\Downloads',
+      'D:\\Users\\otro\\Downloads\\a.zip',
+      'C:\\Users\\amir\\Documents\\AppData', // AppData anidada en Documents: es un nombre cualquiera
+      'C:\\Users\\amir\\Documents\\.ssh',
+      'C:\\Users\\amir\\AppDataBackup',
+      'C:\\Users\\amir\\ntuser.dat.bak\\x', // solo se protege el archivo suelto en la carpeta de usuario
+      'C:\\Data\\Config.Msi',
+      'C:\\Data\\MSOCache',
+      'C:\\Config.Msi.old',
+      'C:\\MSOCache2',
+    ],
+    false,
+  );
+});
+
+test('opción allowAppData: AppData deja de estar protegida, lo demás sigue igual', () => {
+  const opt = { allowAppData: true };
+  assert.equal(isProtectedPath('C:\\Users\\amir\\AppData\\Roaming\\Foo'), true, 'por defecto protegida');
+  assert.equal(isProtectedPath('C:\\Users\\amir\\AppData\\Roaming\\Foo', { allowAppData: false }), true);
+  assert.equal(isProtectedPath('C:\\Users\\amir\\AppData\\Roaming\\Foo', opt), false);
+  assert.equal(isProtectedPath('C:\\Users\\amir\\AppData', opt), false);
+  // Todo lo demás se mantiene protegido.
+  for (const r of ['C:\\Windows\\System32', 'C:\\Users\\amir', 'C:\\Users\\amir\\.ssh\\id_rsa', 'C:\\Users\\amir\\NTUSER.DAT', 'C:\\Users\\amir\\AppData\\..\\.ssh\\k']) {
+    assert.equal(isProtectedPath(r, opt), true, r);
+  }
 });
