@@ -9,7 +9,8 @@
   },
   "scripts": {
     "test": "node --test",
-    "start": "electron ."
+    "start": "electron .",
+    "smoke": "node scripts/smoke.js"
   },
   "devDependencies": {
     "electron": "45.0.0"

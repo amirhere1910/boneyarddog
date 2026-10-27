@@ -1,0 +1,30 @@
+name: Prueba de humo en Windows
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  smoke:
+    name: Abrir la app en Windows y revisar la ventana
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Instalar dependencias
+        run: npm ci
+      - name: Pruebas del motor
+        run: npm test
+      - name: Prueba de humo (abre la app, escanea y revisa la ventana)
+        run: npm run smoke
+      - name: Guardar captura y resultado
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-artifacts
+          path: smoke-artifacts/
+          if-no-files-found: warn

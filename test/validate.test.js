@@ -65,9 +65,20 @@ test('isTrustedSender: solo nuestra ventana y nuestra página, en el marco princ
   assert.equal(V.isTrustedSender({}, expected), false);
 });
 
-test('isAppUrl', () => {
-  const index = 'file:///app/index.html';
-  assert.equal(V.isAppUrl('file:///app/index.html#a', index), true);
-  assert.equal(V.isAppUrl('https://example.com', index), false);
-  assert.equal(V.isAppUrl(undefined, index), false);
+test('sameFileUrl: iguala variantes de la misma página y rechaza lo demás', () => {
+  const same = V.sameFileUrl;
+  assert.equal(same('file:///app/index.html', 'file:///app/index.html'), true);
+  assert.equal(same('file:///app/index.html#x', 'file:///app/index.html?y=1'), true);
+  assert.equal(same('file:///my%20app/index.html', 'file:///my app/index.html'), true, 'codificación de espacios');
+  // Windows: la letra de unidad y las mayúsculas no cuentan.
+  assert.equal(same('file:///D:/a/BoneYardDog/src/renderer/index.html', 'file:///d:/a/boneyarddog/src/renderer/index.html'), true);
+  // En rutas sin letra de unidad (Linux/macOS) las mayúsculas SÍ cuentan.
+  assert.equal(same('file:///app/Index.html', 'file:///app/index.html'), false);
+  assert.equal(same('file:///app/index.html', 'file:///app/otra.html'), false);
+  assert.equal(same('https://example.com/app/index.html', 'file:///app/index.html'), false);
+  assert.equal(same('file:///app/index.html', 'https://example.com/app/index.html'), false);
+  assert.equal(same('https://a.com/x', 'https://a.com/x'), false, 'solo archivos locales');
+  assert.equal(same(undefined, 'file:///app/index.html'), false);
+  assert.equal(same('no es una url', 'no es una url'), false);
+  assert.equal(same('file:///app/%E0%A4%A', 'file:///app/%E0%A4%A'), false);
 });

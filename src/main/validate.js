@@ -54,6 +54,33 @@ function validateNoArgs(args) {
 }
 
 /**
+ * ¿Son la misma página (archivo local)? Ignora #fragmento y ?consulta, la
+ * codificación de caracteres (%20) y, en rutas con letra de unidad
+ * (file:///C:/...), las mayúsculas, porque Windows no las distingue.
+ */
+function sameFileUrl(a, b) {
+  const normalize = (u) => {
+    if (typeof u !== 'string') return null;
+    let url;
+    try {
+      url = new URL(u);
+    } catch {
+      return null;
+    }
+    if (url.protocol !== 'file:') return null;
+    let p;
+    try {
+      p = decodeURIComponent(url.pathname);
+    } catch {
+      return null;
+    }
+    return /^\/[a-zA-Z]:\//.test(p) ? p.toLowerCase() : p;
+  };
+  const x = normalize(a);
+  return x !== null && x === normalize(b);
+}
+
+/**
  * ¿El mensaje viene de NUESTRA ventana y de NUESTRA página?
  * @param {{senderId:number, frameUrl:string, isMainFrame:boolean}} sender
  * @param {{webContentsId:number, indexUrl:string}} expected
@@ -62,14 +89,7 @@ function isTrustedSender(sender, expected) {
   if (!sender || !expected) return false;
   if (sender.senderId !== expected.webContentsId) return false;
   if (sender.isMainFrame !== true) return false;
-  if (typeof sender.frameUrl !== 'string') return false;
-  const clean = (u) => u.split('#')[0].split('?')[0];
-  return clean(sender.frameUrl) === clean(expected.indexUrl);
-}
-
-/** ¿La URL es de la propia aplicación (archivo local) y no de la red? */
-function isAppUrl(url, indexUrl) {
-  return typeof url === 'string' && url.split('#')[0].split('?')[0] === indexUrl.split('#')[0].split('?')[0];
+  return sameFileUrl(sender.frameUrl, expected.indexUrl);
 }
 
 module.exports = {
@@ -80,5 +100,5 @@ module.exports = {
   validateAbsolutePath,
   validateNoArgs,
   isTrustedSender,
-  isAppUrl,
+  sameFileUrl,
 };
