@@ -141,7 +141,6 @@ summary { cursor: pointer; font-weight: 600; }
 /* Fase 2C: pestañas, mapa, menú, detalles y selección */
 :root { --foco: #1a56db; --sel: #111111; }
 @media (prefers-color-scheme: dark) { :root { --foco: #8ab4ff; --sel: #ffffff; } }
-body { padding-bottom: 120px; }
 .fila-entre { justify-content: space-between; flex-wrap: wrap; }
 .campo-fila { flex-direction: row; align-items: center; gap: 8px; }
 .campo-fila label { color: var(--texto); }
@@ -223,7 +222,7 @@ body { padding-bottom: 120px; }
 .det-tramos .muestra { display: inline-block; width: 12px; height: 12px; margin-right: 6px; border-radius: 2px; border: 1px solid rgba(0, 0, 0, 0.4); vertical-align: -1px; }
 .det-subs li { display: flex; justify-content: space-between; gap: 8px; align-items: center; flex-wrap: wrap; }
 
-.barra-seleccion { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; padding: 10px 24px; border-top: 2px solid var(--acento); background: var(--panel); box-shadow: 0 -4px 14px rgba(0, 0, 0, 0.2); }
+.barra-seleccion { position: sticky; bottom: 0; z-index: 10; flex: none; margin: 0 -24px; padding: 10px 24px; border-top: 2px solid var(--acento); background: var(--panel); box-shadow: 0 -4px 14px rgba(0, 0, 0, 0.2); }
 .sel-texto { margin: 0 0 4px; font-weight: 600; }
 .sel { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; color: var(--texto); font-size: 0.95rem; }
 .carpeta[data-seleccionada="1"] { border-color: var(--acento); border-width: 2px; }
@@ -232,3 +231,41 @@ body { padding-bottom: 120px; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* --- Pestaña Mapa: una columna que ocupa todo el alto de la ventana --------------------- */
+body[data-estado="resultado"][data-pestana="mapa"] {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 24px 0;
+  overflow: auto;
+}
+body[data-estado="resultado"][data-pestana="mapa"] .cabecera { margin-bottom: 4px; gap: 10px; }
+body[data-estado="resultado"][data-pestana="mapa"] .cabecera img { width: 34px; height: 34px; }
+body[data-estado="resultado"][data-pestana="mapa"] .cabecera h1 { font-size: 1.15rem; }
+body[data-estado="resultado"][data-pestana="mapa"] .subtitulo { display: none; }
+body[data-estado="resultado"][data-pestana="mapa"] .aviso { margin: 0 0 6px; padding: 3px 10px; font-size: 0.85rem; }
+body[data-estado="resultado"][data-pestana="mapa"] #vista-resultado { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+body[data-estado="resultado"][data-pestana="mapa"] #vista-resultado > section.panel:first-child {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 6px;
+  padding: 8px 12px;
+}
+body[data-estado="resultado"][data-pestana="mapa"] #sec-ignoradas,
+body[data-estado="resultado"][data-pestana="mapa"] #como-decide { display: none; }
+body[data-estado="resultado"][data-pestana="mapa"] #panel-mapa { flex: 1; min-height: 0; display: flex; flex-direction: column; padding-top: 6px; }
+body[data-estado="resultado"][data-pestana="mapa"] .mapa-zona { flex: 1; min-height: 240px; grid-template-rows: minmax(0, 1fr); margin-top: 6px; }
+body[data-estado="resultado"][data-pestana="mapa"] .mapa-contenedor { height: auto; min-height: 0; }
+body[data-estado="resultado"][data-pestana="mapa"] .detalles { max-height: none; height: 100%; }
+body[data-estado="resultado"][data-pestana="mapa"] .leyenda { flex: none; margin-top: 6px; }
+body[data-estado="resultado"][data-pestana="mapa"] .leyenda .nota { margin: 2px 0 0; }
+body[data-estado="resultado"][data-pestana="mapa"] .controles { margin: 4px 0; }
+body[data-estado="resultado"][data-pestana="mapa"] #res-carpeta { margin: 0; }
+.celda[aria-hidden="true"] { pointer-events: auto; cursor: default; }
+.fila-superior { align-items: flex-end; gap: 12px; }
+.fila-superior .ruta { flex: 1 1 200px; margin: 0; }
+.fila-superior .controles { margin: 0; }
+body[data-estado="resultado"][data-pestana="mapa"] #estado-accion { margin: 2px 0; }

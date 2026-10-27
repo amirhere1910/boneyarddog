@@ -68,6 +68,7 @@ const PROTECTED_TOP_LEVEL = new Set([
   'config.msi',
   'msocache',
   'documents and settings',
+  'boneyarddog-cuarentena', // donde BoneYardDog deja los originales ya copiados: nunca se ofrece
   'pagefile.sys',
   'hiberfil.sys',
   'swapfile.sys',

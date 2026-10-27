@@ -1010,3 +1010,14 @@ test('hasLinks: propagación sintética a todos los ancestros; la carpeta sigue 
   const r = findStaleFolders(tree, SF);
   assert.deepEqual(r.items.map((i) => [i.path, i.hasLinks]), [['/r/p', true], ['/r/q', false]]);
 });
+
+test('findStaleFolders: la cuarentena de BoneYardDog nunca se ofrece (protegida)', () => {
+  const old = { atime: daysAgo(900), mtime: daysAgo(900) };
+  const tree = folder('D:\\', [
+    folder('D:\\BoneYardDog-Cuarentena', [folder('D:\\BoneYardDog-Cuarentena\\2026-10-27_1405', [file('D:\\BoneYardDog-Cuarentena\\2026-10-27_1405\\a.bin', 900 * MB, old)])]),
+    folder('D:\\Fotos', [file('D:\\Fotos\\f.jpg', 600 * MB, old)]),
+  ]);
+  const r = findStaleFolders(tree, { olderThanDays: 90, minSizeBytes: 100 * MB, now: NOW });
+  assert.deepEqual(r.items.map((i) => i.path), ['D:\\Fotos']);
+  assert.equal(r.notOffered.find((n) => n.path === 'D:\\BoneYardDog-Cuarentena').reason, 'protegido');
+});

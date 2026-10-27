@@ -114,5 +114,35 @@
     });
   }
 
-  return { layout };
+  /**
+   * layoutFolded(items, width, height, { gap, minSide = 20, minArea = 500, othersId })
+   *   items: [{ id, size, foldable }]
+   * Dibuja como `layout`, pero todo cuadro "plegable" cuyo lado dibujado sea menor que
+   * `minSide` px, o cuya área sea menor que `minArea` px², NO se queda como cuadro: su
+   * tamaño se suma al cuadro `othersId` (se crea si no existe) y se vuelve a dibujar,
+   * hasta que ya no queden cuadros diminutos plegables.
+   * Salida: { rects, folded: [ids plegados], items: [lo que se dibujó] }.
+   * El cuadro `othersId` nunca se pliega a sí mismo (puede quedar chico: la interfaz lo
+   * dibuja sin foco si es diminuto).
+   */
+  function layoutFolded(items, width, height, { gap = 2, minSide = 20, minArea = 500, othersId = 'others' } = {}) {
+    let current = (items || []).filter((it) => it && Number.isFinite(it.size) && it.size > 0).map((it) => ({ ...it }));
+    const folded = [];
+    for (let guard = 0; guard < 200; guard++) {
+      const rects = layout(current, width, height, { gap });
+      const byId = new Map(current.map((it) => [it.id, it]));
+      const tiny = rects.filter((r) => r.id !== othersId && byId.get(r.id).foldable && (Math.min(r.w, r.h) < minSide || r.w * r.h < minArea));
+      if (tiny.length === 0) return { rects, folded, items: current };
+      const ids = new Set(tiny.map((r) => r.id));
+      const moved = current.filter((it) => ids.has(it.id)).reduce((sum, it) => sum + it.size, 0);
+      current = current.filter((it) => !ids.has(it.id));
+      for (const id of ids) folded.push(id);
+      const others = current.find((it) => it.id === othersId);
+      if (others) others.size += moved;
+      else current.push({ id: othersId, size: moved, foldable: false });
+    }
+    return { rects: layout(current, width, height, { gap }), folded, items: current };
+  }
+
+  return { layout, layoutFolded };
 });
