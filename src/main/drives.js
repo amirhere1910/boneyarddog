@@ -26,4 +26,34 @@ async function listDrives({ platform = process.platform, exists = defaultExists 
   return found.filter(Boolean);
 }
 
-module.exports = { listDrives, LETTERS };
+/**
+ * Unidades que pueden ser DESTINO de una copia: las de Windows con su tipo (USB / disco fijo), formato,
+ * espacio libre y tamaño. Se consultan con getVolumeInfo (la letra se valida antes de ejecutar nada).
+ * Los discos de red y de CD/DVD no se ofrecen. `getInfo` se inyecta para poder probarlo sin discos reales.
+ * @returns {Promise<Array<{letter: string, path: string, driveType: string, fileSystem: string, sizeBytes: number|null, freeBytes: number|null}>>}
+ */
+async function listDestinationDrives({ platform = process.platform, exists = defaultExists, getInfo } = {}) {
+  const info = getInfo || ((letter, root) => require('./volume-info').getVolumeInfo(letter, { rootPath: root }));
+  const drives = await listDrives({ platform, exists });
+  const out = await Promise.all(
+    drives.map(async (d) => {
+      let v;
+      try {
+        v = (await info(d.letter, d.path)) || {};
+      } catch {
+        v = {};
+      }
+      return {
+        letter: d.letter,
+        path: d.path,
+        driveType: typeof v.driveType === 'string' ? v.driveType : 'unknown',
+        fileSystem: typeof v.fileSystem === 'string' ? v.fileSystem : 'desconocido',
+        sizeBytes: Number.isFinite(v.sizeBytes) ? v.sizeBytes : null,
+        freeBytes: Number.isFinite(v.freeBytes) ? v.freeBytes : null,
+      };
+    }),
+  );
+  return out.filter((d) => d.driveType !== 'network' && d.driveType !== 'cdrom');
+}
+
+module.exports = { listDrives, listDestinationDrives, LETTERS };

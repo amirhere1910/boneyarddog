@@ -111,3 +111,91 @@ test('sameFileUrl: iguala variantes de la misma página y rechaza lo demás', ()
   assert.equal(same('no es una url', 'no es una url'), false);
   assert.equal(same('file:///app/%E0%A4%A', 'file:///app/%E0%A4%A'), false);
 });
+
+// ============================================================= copiar y transferir (Fase 3B)
+
+const P = process.platform === 'win32' ? { a: 'C:\\Datos\\A', b: 'C:\\Datos\\B', raiz: 'D:\\' } : { a: '/datos/a', b: '/datos/b', raiz: '/mnt/usb' };
+const base = (extra = {}) => ({ mode: 'copy', verify: 'full', sources: [P.a], ...extra });
+
+test('transferPreflight: acepta una petición correcta y completa los valores por defecto', () => {
+  assert.deepEqual(V.validateTransferPreflight(base()), { mode: 'copy', verify: 'full', disposal: 'ninguna', confirmPermanentDelete: false, sources: [P.a] });
+  assert.deepEqual(V.validateTransferPreflight(base({ verify: 'quick' })).verify, 'quick');
+  const mover = V.validateTransferPreflight({ mode: 'move', verify: 'full', disposal: 'papelera', sources: [P.a, P.b] });
+  assert.equal(mover.disposal, 'papelera');
+  const borrar = V.validateTransferPreflight({ mode: 'move', disposal: 'borrar', confirmPermanentDelete: true, sources: [P.a] });
+  assert.equal(borrar.confirmPermanentDelete, true);
+});
+
+test('transferPreflight: la interfaz NO puede mandar un destino ni claves desconocidas', () => {
+  for (const key of ['destinationRoot', 'destination', 'destino', 'dest', 'path', 'acceptRecycleRisk', '__proto__x', 'batch']) {
+    assert.throws(() => V.validateTransferPreflight(base({ [key]: P.raiz })), V.ValidationError, key);
+  }
+});
+
+test('transferPreflight: rechaza tipos, valores fuera de la lista, combinaciones peligrosas y rutas malas', () => {
+  for (const mal of [null, undefined, 'copy', 5, [], [base()]]) assert.throws(() => V.validateTransferPreflight(mal), V.ValidationError);
+  for (const mode of [undefined, 'Copy', 'mover', '', 1, null]) assert.throws(() => V.validateTransferPreflight(base({ mode })), V.ValidationError, String(mode));
+  for (const verify of ['rapida', 'FULL', 1, null]) assert.throws(() => V.validateTransferPreflight(base({ verify })), V.ValidationError, String(verify));
+  for (const disposal of ['cuarentena', 'delete', 'Papelera', 1, null, '']) assert.throws(() => V.validateTransferPreflight({ mode: 'move', disposal, sources: [P.a] }), V.ValidationError, String(disposal));
+  // Copiar no retira nada; transferir exige verificación completa; la confirmación solo vale para borrar.
+  assert.throws(() => V.validateTransferPreflight(base({ disposal: 'papelera' })), V.ValidationError);
+  assert.throws(() => V.validateTransferPreflight(base({ disposal: 'borrar', confirmPermanentDelete: true })), V.ValidationError);
+  assert.throws(() => V.validateTransferPreflight({ mode: 'move', verify: 'quick', disposal: 'papelera', sources: [P.a] }), V.ValidationError, 'la verificación rápida no sirve para transferir');
+  assert.throws(() => V.validateTransferPreflight({ mode: 'move', disposal: 'papelera', confirmPermanentDelete: true, sources: [P.a] }), V.ValidationError);
+  for (const c of ['true', 1, 0, null, 'sí', {}]) assert.throws(() => V.validateTransferPreflight({ mode: 'move', disposal: 'borrar', confirmPermanentDelete: c, sources: [P.a] }), V.ValidationError, String(c));
+  // Orígenes.
+  for (const sources of [undefined, null, [], 'x', P.a, { 0: P.a }, [5], [null], [''], ['relativa/ruta'], ['./x'], [`${P.a}\0x`], [P.a, '../x'], [`${P.a}/../b`]]) {
+    assert.throws(() => V.validateTransferPreflight(base({ sources })), V.ValidationError, JSON.stringify(sources));
+  }
+});
+
+test('transferPreflight: hasta 500 orígenes; 501 se rechazan', () => {
+  const muchos = (n) => Array.from({ length: n }, (_, i) => (process.platform === 'win32' ? `C:\\Datos\\c${i}` : `/datos/c${i}`));
+  assert.equal(V.validateTransferPreflight(base({ sources: muchos(500) })).sources.length, 500);
+  assert.throws(() => V.validateTransferPreflight(base({ sources: muchos(501) })), V.ValidationError);
+  assert.equal(V.MAX_TRANSFER_SOURCES, 500);
+});
+
+test('identificadores de plan y de resultado: solo los 16 hexadecimales que genera el servicio', () => {
+  assert.equal(V.validateOpaqueId('0123456789abcdef'), '0123456789abcdef');
+  for (const mal of ['', '0123456789ABCDEF', '0123456789abcde', '0123456789abcdeff', '../../etc/passwd', '0123456789abcdeg', null, undefined, 5, {}, ['0123456789abcdef'], '0123456789abcdef\n']) {
+    assert.throws(() => V.validateOpaqueId(mal), V.ValidationError, String(mal));
+  }
+});
+
+test('transferDeleteFromResult: id válido, posiciones sin repetir dentro de 0–499 y confirmación EXACTAMENTE true', () => {
+  const id = '0123456789abcdef';
+  assert.deepEqual(V.validateDeleteFromResult(id, [0, 3, 499], true), { runId: id, indices: [0, 3, 499] });
+  for (const malo of [[], [-1], [500], [1.5], ['0'], [0, 0], null, undefined, 'x', [null], [NaN], [Infinity], Array.from({ length: 501 }, (_, i) => i % 500)]) {
+    assert.throws(() => V.validateDeleteFromResult(id, malo, true), V.ValidationError, JSON.stringify(malo));
+  }
+  for (const c of [false, undefined, null, 'true', 1, 0, {}, []]) assert.throws(() => V.validateDeleteFromResult(id, [0], c), V.ValidationError, String(c));
+  assert.throws(() => V.validateDeleteFromResult('no-es-id', [0], true), V.ValidationError);
+});
+
+test('destino: solo rutas absolutas y locales (nada de red, relativas, con \\0 ni ".."); en Windows con letra de unidad', () => {
+  assert.equal(V.validateDestinationPath(P.raiz), P.raiz);
+  for (const mal of ['', null, undefined, 5, 'relativa', './x', '../x', `${P.raiz}\0x`, `${P.raiz}/../x`, '\\\\servidor\\recurso\\carpeta', '//servidor/recurso', '\\\\?\\UNC\\servidor\\recurso']) {
+    assert.throws(() => V.validateDestinationPath(mal), V.ValidationError, String(mal));
+  }
+  // La regla de Windows se puede comprobar en cualquier sistema.
+  assert.equal(V.validateDestinationPath('D:\\Respaldo', { platform: 'win32' }), 'D:\\Respaldo');
+  assert.equal(V.validateDestinationPath('\\\\?\\D:\\Respaldo', { platform: 'win32' }), '\\\\?\\D:\\Respaldo');
+  if (process.platform !== 'win32') assert.throws(() => V.validateDestinationPath('/mnt/usb', { platform: 'win32' }), V.ValidationError, 'en Windows hace falta letra de unidad');
+});
+
+test('verificar una copia anterior: solo { mode } con full o quick', () => {
+  assert.deepEqual(V.validateVerifyBatchOptions(undefined), { mode: 'full' });
+  assert.deepEqual(V.validateVerifyBatchOptions({}), { mode: 'full' });
+  assert.deepEqual(V.validateVerifyBatchOptions({ mode: 'quick' }), { mode: 'quick' });
+  for (const mal of [null, 'full', [], { mode: 'rapida' }, { mode: 1 }, { path: 'C:\\x' }, { mode: 'full', batchFolder: 'C:\\x' }]) {
+    assert.throws(() => V.validateVerifyBatchOptions(mal), V.ValidationError, JSON.stringify(mal));
+  }
+});
+
+test('los canales nuevos existen y tienen el prefijo y formato esperados', () => {
+  for (const name of ['chooseDestination', 'chooseDestinationDrive', 'listDestinationDrives', 'transferPreflight', 'transferRun', 'transferCancel', 'transferProgress', 'transferDeleteFromResult', 'transferRemoveCopy', 'verifyBatchChooseFolder', 'verifyBatchRun']) {
+    assert.match(V.CHANNELS[name], /^byd:[a-z-]+$/, name);
+  }
+  assert.equal(new Set(Object.values(V.CHANNELS)).size, Object.keys(V.CHANNELS).length, 'sin canales repetidos');
+});
