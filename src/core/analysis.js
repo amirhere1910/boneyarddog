@@ -290,6 +290,154 @@ function skipEntry(node, reason) {
 }
 
 // ---------------------------------------------------------------------------
+// Carpetas sin uso (el detector principal de la app)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_STALE_DAYS = 90;
+const DEFAULT_MIN_FOLDER_BYTES = 500 * 1024 * 1024; // 500 MB
+
+/**
+ * Carpetas grandes SIN USO, pensadas para moverlas a un disco externo.
+ *
+ * Una carpeta está sin uso si NINGÚN archivo dentro cuenta como usado en los
+ * últimos `olderThanDays` días (ver "qué cuenta como uso" más arriba: por
+ * defecto solo modificación y creación; el acceso se ignora).
+ *
+ * Reglas:
+ *  - Devuelve SOLO carpetas, y cada una es la MÁS ALTA que cumple: si
+ *    "D:\Proyectos\2019" es candidata, sus subcarpetas no se repiten. Nunca
+ *    hay solapamientos.
+ *  - La carpeta raíz escaneada nunca se ofrece: si toda estuviera sin uso, se
+ *    evalúan sus hijos.
+ *  - No se ofrecen (van a `notOffered` con su motivo; sus hijos se revisan por
+ *    separado, salvo donde se indica):
+ *      'protegido'            la carpeta está protegida (si TODO su contenido
+ *                             también lo está, no se desglosa)
+ *      'contiene-protegidos'  tiene algo protegido dentro
+ *      'contiene-no-leidos'   algo dentro no se pudo leer del todo
+ *      'sin-datos'            carpeta sin lista `children` (no se desglosa)
+ *      'excluida-por-usuario' el usuario la ignoró, o está dentro de una
+ *                             ignorada (no se desglosa)
+ *      'contiene-excluidas'   tiene dentro una carpeta que el usuario ignoró:
+ *                             moverla entera arrastraría la ignorada
+ *    `notOffered` solo recoge lo que habría sido candidato (sin uso y con el
+ *    tamaño mínimo).
+ *  - Cada resultado trae `newestFile`: el archivo cuya fecha determina el
+ *    último uso, para que el usuario entienda por qué la carpeta se considera
+ *    sin uso (null en carpetas vacías). Se calcula solo para los resultados.
+ *  - Orden: tamaño, de mayor a menor.
+ *
+ * @param {object} tree Árbol del escáner.
+ * @param {object} [opts]
+ * @param {number} [opts.olderThanDays=90]
+ * @param {number} [opts.minSizeBytes=524288000] 500 MB
+ * @param {number} [opts.now=Date.now()] Inyectable para pruebas.
+ * @param {boolean} [opts.useAccessTime=false]
+ * @param {boolean} [opts.useCreationTime=true]
+ * @param {string[]} [opts.excludedPaths=[]] Carpetas ignoradas por el usuario.
+ * @param {(p: string) => boolean} [opts.isProtected]
+ * @returns {{items: Array, notOffered: Array, totalBytes: number}}
+ */
+function findStaleFolders(tree, opts = {}) {
+  const {
+    olderThanDays = DEFAULT_STALE_DAYS,
+    minSizeBytes = DEFAULT_MIN_FOLDER_BYTES,
+    now = Date.now(),
+    excludedPaths = [],
+    isProtected = defaultIsProtected,
+  } = opts;
+  if (!Number.isFinite(olderThanDays) || olderThanDays < 0) {
+    throw new RangeError('olderThanDays debe ser un número mayor o igual a 0');
+  }
+  const usage = normalizeUsage(opts);
+  const items = [];
+  const notOffered = [];
+  if (!tree || isFile(tree) || !Array.isArray(tree.children)) return { items, notOffered, totalBytes: 0 };
+
+  const cutoff = now - olderThanDays * DAY_MS;
+  const memo = new Map();
+
+  // Rutas ignoradas: se comparan sin distinguir mayúsculas en rutas de Windows.
+  const excludedKeys = new Set();
+  const containsExcludedKeys = new Set();
+  for (const p of excludedPaths) {
+    if (typeof p !== 'string' || p === '') continue;
+    const k = pathKey(p);
+    excludedKeys.add(k.key);
+    for (const anc of ancestorKeys(k)) containsExcludedKeys.add(anc);
+  }
+  const isExcluded = (node) => {
+    if (excludedKeys.size === 0) return false;
+    const k = pathKey(node.path);
+    if (excludedKeys.has(k.key)) return true;
+    for (const anc of ancestorKeys(k)) if (excludedKeys.has(anc)) return true;
+    return false;
+  };
+  const containsExcluded = (node) => containsExcludedKeys.size > 0 && containsExcludedKeys.has(pathKey(node.path).key);
+
+  function visit(node) {
+    if (isFile(node)) return;
+    const info = computeInfo(node, isProtected, usage, memo);
+    if (info.noData) {
+      if (!(node.size < minSizeBytes)) notOffered.push(skipEntry(node, 'sin-datos'));
+      return;
+    }
+    const stale = info.lastUsed !== null && info.lastUsed < cutoff;
+    if (!stale) {
+      node.children.forEach(visit);
+      return;
+    }
+    if (node.size < minSizeBytes) return; // sus hijos son aún más chicos
+
+    if (info.selfProtected) {
+      notOffered.push(skipEntry(node, 'protegido'));
+      if (info.fullyProtected) return;
+    } else if (info.subtreeProtected) {
+      notOffered.push(skipEntry(node, 'contiene-protegidos'));
+    } else if (isExcluded(node)) {
+      notOffered.push(skipEntry(node, 'excluida-por-usuario'));
+      return;
+    } else if (info.subtreeIncomplete) {
+      notOffered.push(skipEntry(node, 'contiene-no-leidos'));
+    } else if (containsExcluded(node)) {
+      notOffered.push(skipEntry(node, 'contiene-excluidas'));
+    } else {
+      items.push({
+        node,
+        path: node.path,
+        name: node.name,
+        size: node.size,
+        fileCount: node.fileCount,
+        lastUsedMs: info.lastUsed,
+        daysUnused: Math.floor((now - info.lastUsed) / DAY_MS),
+        newestFile: findNewestFile(node, info.lastUsed, usage),
+      });
+      return;
+    }
+    node.children.forEach(visit);
+  }
+  tree.children.forEach(visit);
+
+  items.sort(bySizeThenPath);
+  notOffered.sort(bySizeThenPath);
+  return { items, notOffered, totalBytes: items.reduce((sum, i) => sum + i.size, 0) };
+}
+
+/** El archivo de la carpeta cuya fecha de uso es `ms` (el más reciente), o null. */
+function findNewestFile(folder, ms, usage) {
+  const stack = [folder];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (isFile(node)) {
+      if (fileLastUsed(node, usage) === ms) return { path: node.path, name: node.name, ms };
+    } else if (Array.isArray(node.children)) {
+      for (const child of node.children) stack.push(child);
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Fiabilidad de la fecha de último acceso
 // ---------------------------------------------------------------------------
 
@@ -464,6 +612,9 @@ module.exports = {
   lastUsedDate,
   annotateLastUsed,
   findStale,
+  findStaleFolders,
+  DEFAULT_STALE_DAYS,
+  DEFAULT_MIN_FOLDER_BYTES,
   atimeReliability,
   summarize,
 };

@@ -385,3 +385,139 @@ test('setUsageOptions: valida lo que recibe y vale para escaneos nuevos', async 
   assert.ok(Math.abs(hijo.lastUsedMs - Date.now()) < 60_000);
   assert.deepEqual(await svc.setUsageOptions({ useAccessTime: true }), { useAccessTime: true, useCreationTime: false });
 });
+
+// --- getStaleFolders ---------------------------------------------------------
+
+function buildFolders(root) {
+  put(root, 'vieja/a.bin', 5000, 800);
+  put(root, 'conReciente/a.bin', 5000, 800);
+  put(root, 'conReciente/nota.txt', 10, 5);
+  put(root, 'chica/a.bin', 10, 800);
+  put(root, 'padre/h1/a.bin', 3000, 600);
+  put(root, 'padre/h2/b.bin', 3000, 600);
+  put(root, 'canción ñandú 🐕/x.bin', 4000, 500);
+  put(root, 'nuevo.txt', 5, 0);
+}
+
+test('getStaleFolders: igual que el análisis directo, con campos livianos y newestFile', async (t) => {
+  const root = tmpDir(t);
+  buildFolders(root);
+  const svc = await newRealService(t);
+  await svc.startScan(root);
+  const direct = await scan(root);
+  const opts = { olderThanDays: 90, minSizeBytes: 1000 };
+  const want = analysis.findStaleFolders(direct.tree, { ...opts, useCreationTime: false });
+
+  const got = await svc.getStaleFolders(opts);
+  assert.deepEqual(got.items.map((i) => i.path), want.items.map((i) => i.path));
+  assert.equal(got.count, want.items.length);
+  assert.equal(got.truncated, false);
+  assert.equal(got.totalBytes, want.totalBytes);
+  assert.equal(got.notOfferedCount, want.notOffered.length);
+  assert.deepEqual(got.items.map((i) => i.name).sort(), ['canción ñandú 🐕', 'padre', 'vieja'].sort());
+  for (const item of got.items) {
+    assert.deepEqual(Object.keys(item).sort(), ['daysUnused', 'fileCount', 'hasChildren', 'lastUsedMs', 'name', 'newestFile', 'path', 'protected', 'size', 'type']);
+    assert.equal(item.type, 'folder');
+    assert.ok(item.newestFile && item.newestFile.name && item.newestFile.ms === item.lastUsedMs);
+  }
+  const vieja = got.items.find((i) => i.name === 'vieja');
+  assert.equal(vieja.newestFile.name, 'a.bin');
+  // Valores por defecto: 90 días y 500 MB => nada de lo de prueba llega al mínimo.
+  assert.equal((await svc.getStaleFolders()).count, 0);
+});
+
+test('getStaleFolders: parámetros inválidos se rechazan', async (t) => {
+  const root = tmpDir(t);
+  buildFolders(root);
+  const svc = await newRealService(t);
+  await assert.rejects(() => svc.getStaleFolders({ olderThanDays: 5 }), { code: 'SIN_ANALISIS' });
+  await svc.startScan(root);
+  for (const mal of [0, -1, 3651, 1.5, NaN, '90', null]) {
+    await assert.rejects(() => svc.getStaleFolders({ olderThanDays: mal }), RangeError, `olderThanDays ${mal}`);
+  }
+  for (const mal of [-1, 10 * 1024 ** 4 + 1, 1.5, NaN, '5', null]) {
+    await assert.rejects(() => svc.getStaleFolders({ minSizeBytes: mal }), RangeError, `minSizeBytes ${mal}`);
+  }
+  await assert.doesNotReject(() => svc.getStaleFolders({ olderThanDays: 3650, minSizeBytes: 10 * 1024 ** 4 }));
+  await assert.doesNotReject(() => svc.getStaleFolders({ olderThanDays: 1, minSizeBytes: 0 }));
+  await assert.rejects(() => svc.getStaleFolders({ excludedPaths: 'x' }), RangeError);
+  await assert.rejects(() => svc.getStaleFolders({ excludedPaths: [1] }), TypeError);
+  await assert.rejects(() => svc.getStaleFolders({ excludedPaths: ['a\0b'] }), TypeError);
+  await assert.rejects(() => svc.getStaleFolders({ excludedPaths: Array(501).fill('/x') }), RangeError);
+  await assert.rejects(() => svc.getStaleFolders([]), TypeError);
+  await assert.rejects(() => svc.getStaleFolders(null), TypeError);
+  await assert.rejects(() => svc.getStaleFolders({ olderThanDays: 5, now: 'ayer' }), RangeError);
+});
+
+test('getStaleFolders: excludedPaths aparta carpetas y se informa en notOfferedByReason', async (t) => {
+  const root = tmpDir(t);
+  buildFolders(root);
+  const svc = await newRealService(t);
+  await svc.startScan(root);
+  const base = { olderThanDays: 90, minSizeBytes: 1000 };
+  const all = await svc.getStaleFolders(base);
+  const ex = await svc.getStaleFolders({ ...base, excludedPaths: [path.join(root, 'vieja')] });
+  assert.equal(ex.count, all.count - 1);
+  assert.ok(!ex.items.some((i) => i.name === 'vieja'));
+  assert.equal(ex.notOfferedByReason['excluida-por-usuario'], 1);
+  // Una ruta ignorada que ya no existe en este escaneo no estorba.
+  const fuera = await svc.getStaleFolders({ ...base, excludedPaths: [path.join(root, '..', 'otra-cosa')] });
+  assert.equal(fuera.count, all.count);
+});
+
+test('getStaleFolders: máximo 500 entradas, truncated y totales completos; mensaje pequeño', async (t) => {
+  const root = tmpDir(t);
+  for (let i = 0; i < 600; i++) put(root, `c${String(i).padStart(3, '0')}/a.bin`, 2000, 400);
+  put(root, 'nuevo.txt', 1, 0);
+  const sizes = [];
+  const svc = newService(t, {
+    workerFactory: () => {
+      const w = new Worker(path.join(__dirname, '..', 'src', 'service', 'analysis-worker.js'));
+      w.on('message', (m) => sizes.push(v8.serialize(m).length));
+      return w;
+    },
+  });
+  await svc.setUsageOptions({ useCreationTime: false });
+  await svc.startScan(root);
+  sizes.length = 0;
+  const r = await svc.getStaleFolders({ olderThanDays: 90, minSizeBytes: 1000 });
+  assert.equal(r.items.length, 500);
+  assert.equal(r.count, 600);
+  assert.equal(r.truncated, true);
+  assert.equal(r.totalBytes, 600 * 2000);
+  assert.equal(sizes.length, 1);
+  assert.ok(sizes[0] < 400_000, `mensaje de ${sizes[0]} bytes`);
+  assert.ok(!JSON.stringify(r).includes('"children"'));
+});
+
+test('getStaleFolders: setUsageOptions y un escaneo nuevo cambian los resultados de forma coherente (cache)', async (t) => {
+  const root = tmpDir(t);
+  // Carpeta con mtime viejo y atime de hoy ("antivirus").
+  const f = path.join(root, 'av', 'a.bin');
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, Buffer.alloc(5000, 1));
+  fs.utimesSync(f, new Date(), new Date(Date.now() - 700 * DAY));
+  put(root, 'nuevo.txt', 1, 0);
+  const svc = await newRealService(t);
+  await svc.startScan(root);
+  const opts = { olderThanDays: 90, minSizeBytes: 1000 };
+
+  const a = await svc.getStaleFolders(opts);
+  assert.deepEqual(a.items.map((i) => i.name), ['av']);
+  assert.deepEqual(await svc.getStaleFolders(opts), a, 'misma respuesta con los mismos parámetros');
+  assert.ok(a.items[0].daysUnused >= 699);
+
+  await svc.setUsageOptions({ useAccessTime: true });
+  assert.equal((await svc.getStaleFolders(opts)).count, 0, 'con el acceso contando, está en uso');
+  await svc.setUsageOptions({ useAccessTime: false });
+  assert.equal((await svc.getStaleFolders(opts)).count, 1);
+
+  // Escaneo nuevo: el resultado guardado no se reutiliza.
+  const otra = tmpDir(t);
+  put(otra, 'x/a.bin', 5000, 800);
+  put(otra, 'nuevo.txt', 1, 0);
+  await svc.startScan(otra);
+  const b = await svc.getStaleFolders(opts);
+  assert.deepEqual(b.items.map((i) => i.name), ['x']);
+  assert.ok(b.items[0].path.startsWith(otra));
+});

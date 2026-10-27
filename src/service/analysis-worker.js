@@ -20,6 +20,9 @@ const { isProtectedPath } = require('../core/protected');
 
 const MAX_LIMIT = 1000;
 const MAX_SELECTION = 10000;
+const MAX_FOLDERS = 500;
+const MAX_EXCLUDED = 500;
+const MAX_MIN_BYTES = 10 * 1024 ** 4; // 10 TB
 
 let tree = null; // árbol del último escaneo completo
 let rootPath = null;
@@ -29,6 +32,10 @@ let current = null; // { seq, controller }
 // Opciones de "uso" vigentes (ver analysis.js). UNA sola fuente de verdad: las
 // fechas que se muestran (lastUsedMs) y los cálculos (daysUnused, sin uso) las usan siempre.
 let usage = analysis.normalizeUsage();
+// Último resultado de carpetas sin uso, por parámetros. `treeVersion` cambia cuando
+// cambia el árbol o las opciones de uso, y con eso se descarta el resultado guardado.
+let treeVersion = 0;
+let folderCache = null; // { key, value }
 
 class ServiceError extends Error {
   constructor(message, code) {
@@ -103,6 +110,7 @@ const handlers = {
     current = mine;
     tree = null;
     summary = null;
+    treeVersion++;
 
     const res = await scan(p, {
       signal: mine.controller.signal,
@@ -117,6 +125,7 @@ const handlers = {
 
     if (res.tree) analysis.annotateLastUsed(res.tree, usage);
     tree = res.tree;
+    treeVersion++;
     rootPath = path.resolve(p);
     summary = {
       cancelled: false,
@@ -140,6 +149,7 @@ const handlers = {
     }
     usage = analysis.normalizeUsage({ ...usage, ...options });
     if (tree) analysis.annotateLastUsed(tree, usage);
+    treeVersion++;
     return { ...usage };
   },
 
@@ -200,6 +210,56 @@ const handlers = {
       notOfferedCount: notOffered.length,
       notOfferedByReason: countBy(notOffered, 'reason'),
     };
+  },
+
+  /**
+   * Carpetas sin uso (ver analysis.findStaleFolders). Parámetros: olderThanDays
+   * (entero 1–3650), minSizeBytes (0–10 TB), excludedPaths (hasta 500 rutas) y
+   * `now` (solo para pruebas). Las opciones de uso salen del estado del worker.
+   */
+  async getStaleFolders(options = {}) {
+    const o = options === null || typeof options !== 'object' || Array.isArray(options) ? null : options;
+    if (!o) throw new TypeError('Las opciones deben ser un objeto');
+    const olderThanDays = o.olderThanDays === undefined ? analysis.DEFAULT_STALE_DAYS : o.olderThanDays;
+    const minSizeBytes = o.minSizeBytes === undefined ? analysis.DEFAULT_MIN_FOLDER_BYTES : o.minSizeBytes;
+    const excludedPaths = o.excludedPaths === undefined ? [] : o.excludedPaths;
+    if (!Number.isInteger(olderThanDays) || olderThanDays < 1 || olderThanDays > 3650) {
+      throw new RangeError('olderThanDays debe ser un entero entre 1 y 3650');
+    }
+    if (!Number.isInteger(minSizeBytes) || minSizeBytes < 0 || minSizeBytes > MAX_MIN_BYTES) {
+      throw new RangeError('minSizeBytes debe ser un entero entre 0 y 10 TB');
+    }
+    if (!Array.isArray(excludedPaths) || excludedPaths.length > MAX_EXCLUDED) {
+      throw new RangeError(`excludedPaths debe ser una lista de hasta ${MAX_EXCLUDED} rutas`);
+    }
+    for (const p of excludedPaths) {
+      if (typeof p !== 'string' || p === '' || p.length > 32767 || p.includes('\0')) throw new TypeError('excludedPaths solo admite rutas como texto');
+    }
+    const params = { olderThanDays, minSizeBytes, excludedPaths: [...excludedPaths].sort() };
+    if (o.now !== undefined) {
+      if (!Number.isFinite(o.now)) throw new RangeError('now debe ser un número');
+      params.now = o.now;
+    }
+    const root = requireTree();
+    const key = JSON.stringify([treeVersion, params]);
+    // Con `now` fijo el resultado es siempre el mismo; sin él, el reloj cuenta: no se reutiliza pasado un rato.
+    if (folderCache && folderCache.key === key && (params.now !== undefined || Date.now() - folderCache.at < 60_000)) {
+      return folderCache.value;
+    }
+
+    const { items, notOffered, totalBytes } = analysis.findStaleFolders(root, { ...params, ...usage });
+    const value = {
+      items: items.slice(0, MAX_FOLDERS).map((i) =>
+        toLight(i.node, { lastUsedMs: i.lastUsedMs, daysUnused: i.daysUnused, newestFile: i.newestFile }),
+      ),
+      count: items.length,
+      truncated: items.length > MAX_FOLDERS,
+      totalBytes,
+      notOfferedCount: notOffered.length,
+      notOfferedByReason: countBy(notOffered, 'reason'),
+    };
+    folderCache = { key, value, at: Date.now() };
+    return value;
   },
 
   async summarizeSelection(paths) {

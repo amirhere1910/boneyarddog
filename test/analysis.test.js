@@ -13,6 +13,7 @@ const {
   topLargestFolders,
   lastUsedDate,
   findStale,
+  findStaleFolders,
   atimeReliability,
   summarize,
 } = require('../src/core/analysis');
@@ -663,6 +664,8 @@ test('escáner + análisis: una subcarpeta sin permisos hace "partial" al padre 
   put(root, 'nuevo.txt', 5, { atimeDaysAgo: 1 });
   const fsp = require('node:fs/promises');
   const blocked = path.join(root, 'viejo', 'locked');
+  // Sin contenido legible, la fecha de la carpeta ilegible es la suya propia: se la dejamos vieja.
+  fs.utimesSync(blocked, new Date(daysAgo(800)), new Date(daysAgo(800)));
   const original = fsp.readdir;
   t.mock.method(fsp, 'readdir', async (p, ...rest) => {
     if (p === blocked) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
@@ -716,4 +719,250 @@ test('escáner: un archivo que falla por EPERM deja al padre inmediato como part
   const { items, notOffered } = findStale(tree, { olderThanDays: 365, now: NOW, ...REAL });
   assert.ok(!items.some((i) => i.path === get('viejo').path));
   assert.ok(notOffered.some((n) => n.path === get('viejo').path && n.reason === 'contiene-no-leidos'));
+});
+
+// --- findStaleFolders (el detector principal) --------------------------------
+
+const MB = 1024 * 1024;
+const OLD = { atime: daysAgo(900), mtime: daysAgo(900) };
+const FRESH = { atime: daysAgo(1), mtime: daysAgo(1) };
+// Opciones de prueba: 3 meses, mínimo 100 MB, nada protegido salvo que se diga.
+const SF = { olderThanDays: 90, minSizeBytes: 100 * MB, now: NOW, isProtected: NO_PROT };
+const paths = (r) => r.items.map((i) => i.path);
+const reasons = (r) => Object.fromEntries(r.notOffered.map((n) => [n.path, n.reason]));
+
+test('findStaleFolders: vieja grande sí; con un archivo de hace 5 días no; bajo el mínimo no', () => {
+  const tree = folder('/r', [
+    folder('/r/vieja', [file('/r/vieja/a.iso', 600 * MB, OLD)]),
+    folder('/r/conReciente', [file('/r/conReciente/a.iso', 600 * MB, OLD), file('/r/conReciente/nota.txt', 10, { atime: daysAgo(5), mtime: daysAgo(5) })]),
+    folder('/r/chica', [file('/r/chica/a.bin', 50 * MB, OLD)]),
+    file('/r/suelto.iso', 900 * MB, OLD), // un archivo suelto NO es una carpeta
+    file('/r/nuevo.txt', 1, FRESH),
+  ]);
+  const r = findStaleFolders(tree, SF);
+  assert.deepEqual(paths(r), ['/r/vieja']);
+  assert.equal(r.items[0].daysUnused, 900);
+  assert.equal(r.items[0].name, 'vieja');
+  assert.equal(r.items[0].fileCount, 1);
+  assert.deepEqual(r.items[0].newestFile, { path: '/r/vieja/a.iso', name: 'a.iso', ms: daysAgo(900) });
+  assert.equal(r.totalBytes, 600 * MB);
+  assert.deepEqual(r.notOffered, []);
+});
+
+test('findStaleFolders: newestFile es el archivo que fija la fecha (el más reciente de la carpeta)', () => {
+  const tree = folder('/r', [
+    folder('/r/p', [
+      file('/r/p/a', 300 * MB, { atime: daysAgo(900), mtime: daysAgo(400) }),
+      folder('/r/p/sub', [file('/r/p/sub/b', 300 * MB, { atime: daysAgo(900), mtime: daysAgo(200) })]),
+    ]),
+    file('/r/nuevo', 1, FRESH),
+  ]);
+  const [item] = findStaleFolders(tree, SF).items;
+  assert.equal(item.newestFile.path, '/r/p/sub/b');
+  assert.equal(item.lastUsedMs, daysAgo(200));
+  assert.equal(item.daysUnused, 200);
+});
+
+test('findStaleFolders: antivirus (atime de hoy, mtime viejo) se ofrece; con useAccessTime ya no', () => {
+  const tree = folder('/r', [
+    folder('/r/av', [file('/r/av/a.bin', 300 * MB, { atime: daysAgo(0), mtime: daysAgo(700) })]),
+    file('/r/nuevo', 1, FRESH),
+  ]);
+  assert.deepEqual(paths(findStaleFolders(tree, SF)), ['/r/av']);
+  assert.deepEqual(paths(findStaleFolders(tree, { ...SF, useAccessTime: true })), []);
+});
+
+test('findStaleFolders: la carpeta restaurada de un respaldo (creación reciente) no se ofrece por defecto', () => {
+  const tree = folder('/r', [
+    folder('/r/restaurada', [file('/r/restaurada/a', 300 * MB, { ...OLD, birth: daysAgo(2) })]),
+    file('/r/nuevo', 1, FRESH),
+  ]);
+  assert.deepEqual(paths(findStaleFolders(tree, SF)), []);
+  assert.deepEqual(paths(findStaleFolders(tree, { ...SF, useCreationTime: false })), ['/r/restaurada']);
+});
+
+test('findStaleFolders: padre vieja con hijos viejos es UNA entrada; los hijos no se repiten', () => {
+  const tree = folder('/r', [
+    folder('/r/Proyectos', [
+      folder('/r/Proyectos/2019', [
+        folder('/r/Proyectos/2019/a', [file('/r/Proyectos/2019/a/x', 300 * MB, OLD)]),
+        folder('/r/Proyectos/2019/b', [file('/r/Proyectos/2019/b/y', 300 * MB, OLD)]),
+      ]),
+      folder('/r/Proyectos/actual', [file('/r/Proyectos/actual/z', 10, FRESH)]),
+    ]),
+  ]);
+  const r = findStaleFolders(tree, SF);
+  assert.deepEqual(paths(r), ['/r/Proyectos/2019'], 'la carpeta más alta que cumple');
+  assert.equal(r.items[0].size, 600 * MB);
+});
+
+test('findStaleFolders: sin solapamientos nunca (propiedad sobre un árbol grande)', () => {
+  const mk = (base, depth) =>
+    folder(base, [
+      file(`${base}/f`, 200 * MB, depth % 2 ? OLD : FRESH),
+      ...(depth > 0 ? [mk(`${base}/a`, depth - 1), mk(`${base}/b`, depth - 1)] : []),
+    ]);
+  const r = findStaleFolders(folder('/r', [mk('/r/x', 4), mk('/r/y', 3)]), { ...SF, minSizeBytes: 0 });
+  for (const a of r.items) for (const b of r.items) if (a !== b) assert.ok(!b.path.startsWith(a.path + '/'), `${b.path} dentro de ${a.path}`);
+});
+
+test('findStaleFolders: la raíz nunca se ofrece; si toda está sin uso se ofrecen sus hijos', () => {
+  const tree = folder('/r', [
+    folder('/r/a', [file('/r/a/x', 300 * MB, OLD)]),
+    folder('/r/b', [file('/r/b/y', 200 * MB, OLD)]),
+    file('/r/suelto', 1, OLD),
+  ]);
+  const r = findStaleFolders(tree, SF);
+  assert.deepEqual(paths(r), ['/r/a', '/r/b'], 'ordenadas por tamaño');
+  assert.ok(!paths(r).includes('/r'));
+});
+
+test('findStaleFolders: excluida por el usuario (y lo que contiene); comparación sin mayúsculas en Windows', () => {
+  const tree = folder('C:\\Datos', [
+    folder('C:\\Datos\\Vieja', [file('C:\\Datos\\Vieja\\a', 300 * MB, OLD), folder('C:\\Datos\\Vieja\\sub', [file('C:\\Datos\\Vieja\\sub\\b', 300 * MB, OLD)])]),
+    folder('C:\\Datos\\Otra', [file('C:\\Datos\\Otra\\c', 300 * MB, OLD)]),
+  ]);
+  const r = findStaleFolders(tree, { ...SF, excludedPaths: ['c:/datos/VIEJA'] });
+  assert.deepEqual(paths(r), ['C:\\Datos\\Otra']);
+  assert.equal(reasons(r)['C:\\Datos\\Vieja'], 'excluida-por-usuario');
+  assert.ok(!('C:\\Datos\\Vieja\\sub' in reasons(r)), 'lo de adentro no se desglosa');
+  // Ignorar una subcarpeta: el padre no se ofrece entero (arrastraría la ignorada), el resto sí.
+  const r2 = findStaleFolders(tree, { ...SF, excludedPaths: ['C:\\Datos\\Vieja\\sub\\'] });
+  assert.equal(reasons(r2)['C:\\Datos\\Vieja'], 'contiene-excluidas');
+  assert.equal(reasons(r2)['C:\\Datos\\Vieja\\sub'], 'excluida-por-usuario');
+  assert.deepEqual(paths(r2), ['C:\\Datos\\Otra']);
+  // En rutas de Linux sí se distinguen mayúsculas.
+  const lin = folder('/r', [folder('/r/Vieja', [file('/r/Vieja/a', 300 * MB, OLD)])]);
+  assert.deepEqual(paths(findStaleFolders(lin, { ...SF, excludedPaths: ['/r/vieja'] })), ['/r/Vieja']);
+});
+
+test('findStaleFolders: protegidas y carpetas con algo protegido dentro no se ofrecen', () => {
+  const tree = folder('C:\\', [
+    folder('C:\\Windows', [file('C:\\Windows\\k.dll', 900 * MB, OLD)]),
+    folder('C:\\Users', [
+      folder('C:\\Users\\amir', [
+        folder('C:\\Users\\amir\\Videos', [file('C:\\Users\\amir\\Videos\\v.mp4', 400 * MB, OLD)]),
+        folder('C:\\Users\\amir\\AppData', [file('C:\\Users\\amir\\AppData\\x', 200 * MB, OLD)]),
+      ]),
+    ]),
+    folder('C:\\Temp', [file('C:\\Temp\\t', 300 * MB, OLD)]),
+  ]);
+  const r = findStaleFolders(tree, { ...SF, isProtected: undefined });
+  assert.deepEqual(paths(r), ['C:\\Users\\amir\\Videos', 'C:\\Temp']);
+  const why = reasons(r);
+  assert.equal(why['C:\\Windows'], 'protegido');
+  assert.equal(why['C:\\Users'], 'protegido');
+  assert.equal(why['C:\\Users\\amir'], 'protegido');
+  assert.equal(why['C:\\Users\\amir\\AppData'], 'protegido');
+});
+
+test('findStaleFolders: con una subcarpeta ilegible no se ofrece entera; la parte legible sí', () => {
+  const locked = { ...folder('D:\\datos\\viejo\\locked', [], { mtime: daysAgo(900) }), incomplete: true };
+  const tree = folder('D:\\datos', [
+    folder('D:\\datos\\viejo', [
+      folder('D:\\datos\\viejo\\ok', [file('D:\\datos\\viejo\\ok\\a.bin', 1024 * MB, OLD)]),
+      locked,
+    ]),
+    file('D:\\datos\\nuevo', 1, FRESH),
+  ]);
+  const r = findStaleFolders(tree, { ...SF, isProtected: NO_PROT });
+  assert.deepEqual(paths(r), ['D:\\datos\\viejo\\ok']);
+  assert.equal(reasons(r)['D:\\datos\\viejo'], 'contiene-no-leidos');
+});
+
+test('findStaleFolders: carpeta sin lista de hijos => sin-datos, sin lanzar error', () => {
+  const sinHijos = { name: 'x', path: '/r/x', type: 'folder', size: 800 * MB, atimeMs: 0, mtimeMs: 0, fileCount: 3 };
+  const tree = folder('/r', [sinHijos, file('/r/nuevo', 1, FRESH)]);
+  let r;
+  assert.doesNotThrow(() => (r = findStaleFolders(tree, SF)));
+  assert.deepEqual(r.items, []);
+  assert.equal(reasons(r)['/r/x'], 'sin-datos');
+});
+
+test('findStaleFolders: valores por defecto (90 días y 500 MB), orden por tamaño y validación', () => {
+  const tree = folder('/r', [
+    folder('/r/a', [file('/r/a/x', 600 * MB, { atime: daysAgo(100), mtime: daysAgo(100) })]),
+    folder('/r/b', [file('/r/b/x', 700 * MB, { atime: daysAgo(100), mtime: daysAgo(100) })]),
+    folder('/r/c', [file('/r/c/x', 499 * MB, { atime: daysAgo(100), mtime: daysAgo(100) })]),
+    folder('/r/d', [file('/r/d/x', 800 * MB, { atime: daysAgo(89), mtime: daysAgo(89) })]),
+  ]);
+  const r = findStaleFolders(tree, { now: NOW, isProtected: NO_PROT });
+  assert.deepEqual(paths(r), ['/r/b', '/r/a']);
+  assert.deepEqual(findStaleFolders(null, SF), { items: [], notOffered: [], totalBytes: 0 });
+  assert.deepEqual(findStaleFolders(file('/r/f', 5), SF).items, []);
+  assert.throws(() => findStaleFolders(tree, { olderThanDays: -1 }), RangeError);
+});
+
+// Con carpetas reales: fechas con utimes, fecha de creación desactivada.
+const SFR = { olderThanDays: 90, minSizeBytes: 1000, now: NOW, isProtected: NO_PROT, useCreationTime: false };
+
+async function realCase(t, build) {
+  const root = tmpDir(t);
+  build(root);
+  const { tree } = await scan(root);
+  return { root, tree, rel: (r) => r.items.map((i) => path.relative(root, i.path)) };
+}
+function putAt(root, rel, bytes, { atimeDaysAgo, mtimeDaysAgo }) {
+  const full = path.join(root, rel);
+  fs.mkdirSync(path.dirname(full), { recursive: true });
+  fs.writeFileSync(full, Buffer.alloc(bytes, 1));
+  fs.utimesSync(full, new Date(daysAgo(atimeDaysAgo)), new Date(daysAgo(mtimeDaysAgo)));
+}
+
+test('findStaleFolders con carpetas reales: los casos del encargo', async (t) => {
+  const { root, tree, rel } = await realCase(t, (root) => {
+    putAt(root, 'vieja/a.bin', 5000, { atimeDaysAgo: 800, mtimeDaysAgo: 800 });
+    putAt(root, 'conArchivoReciente/a.bin', 5000, { atimeDaysAgo: 800, mtimeDaysAgo: 800 });
+    putAt(root, 'conArchivoReciente/nota.txt', 10, { atimeDaysAgo: 5, mtimeDaysAgo: 5 });
+    putAt(root, 'antivirus/a.bin', 5000, { atimeDaysAgo: 0, mtimeDaysAgo: 700 });
+    putAt(root, 'chica/a.bin', 10, { atimeDaysAgo: 800, mtimeDaysAgo: 800 });
+    putAt(root, 'padre/h1/a.bin', 3000, { atimeDaysAgo: 600, mtimeDaysAgo: 600 });
+    putAt(root, 'padre/h2/b.bin', 3000, { atimeDaysAgo: 600, mtimeDaysAgo: 600 });
+    putAt(root, 'canción ñandú 🐕/x.bin', 4000, { atimeDaysAgo: 500, mtimeDaysAgo: 500 });
+    putAt(root, 'nuevo.txt', 5, { atimeDaysAgo: 1, mtimeDaysAgo: 1 });
+  });
+  const r = findStaleFolders(tree, SFR);
+  assert.deepEqual(rel(r).sort(), ['antivirus', 'canción ñandú 🐕', 'padre', 'vieja'].sort());
+  assert.ok(!rel(r).some((p) => p.startsWith('padre' + path.sep)), 'los hijos de padre no se repiten');
+  // Con el acceso contando, la del antivirus deja de ofrecerse.
+  assert.ok(!rel(findStaleFolders(tree, { ...SFR, useAccessTime: true })).includes('antivirus'));
+  // Excluida por el usuario.
+  const ex = findStaleFolders(tree, { ...SFR, excludedPaths: [path.join(root, 'VIEJA'.toLowerCase())] });
+  assert.ok(!rel(ex).includes('vieja'));
+  assert.equal(ex.notOffered.find((n) => n.path === path.join(root, 'vieja')).reason, 'excluida-por-usuario');
+});
+
+test('findStaleFolders con carpetas reales: raíz vieja => se ofrecen los hijos; protegida inyectada', async (t) => {
+  const { root, tree, rel } = await realCase(t, (root) => {
+    putAt(root, 'a/x.bin', 5000, { atimeDaysAgo: 800, mtimeDaysAgo: 800 });
+    putAt(root, 'sistema/y.bin', 6000, { atimeDaysAgo: 800, mtimeDaysAgo: 800 });
+    putAt(root, 'b/z.bin', 4000, { atimeDaysAgo: 800, mtimeDaysAgo: 800 });
+  });
+  const todo = findStaleFolders(tree, SFR);
+  assert.deepEqual(rel(todo), ['sistema', 'a', 'b']);
+  assert.ok(!todo.items.some((i) => i.path === root));
+  const sistema = path.join(root, 'sistema');
+  const r = findStaleFolders(tree, { ...SFR, isProtected: (p) => p === sistema || p.startsWith(sistema + path.sep) });
+  assert.deepEqual(rel(r), ['a', 'b']);
+  assert.equal(r.notOffered.find((n) => n.path === sistema).reason, 'protegido');
+});
+
+test('findStaleFolders con carpetas reales: subcarpeta sin permiso (simulada)', async (t) => {
+  const root = tmpDir(t);
+  putAt(root, 'viejo/ok/a.bin', 5000, { atimeDaysAgo: 800, mtimeDaysAgo: 800 });
+  putAt(root, 'viejo/locked/b.bin', 5000, { atimeDaysAgo: 800, mtimeDaysAgo: 800 });
+  putAt(root, 'nuevo.txt', 5, { atimeDaysAgo: 1, mtimeDaysAgo: 1 });
+  const fsp = require('node:fs/promises');
+  const blocked = path.join(root, 'viejo', 'locked');
+  // Sin contenido legible, la fecha de la carpeta ilegible es la suya propia: se la dejamos vieja.
+  fs.utimesSync(blocked, new Date(daysAgo(800)), new Date(daysAgo(800)));
+  const original = fsp.readdir;
+  t.mock.method(fsp, 'readdir', async (p, ...rest) => {
+    if (p === blocked) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+    return original.call(fsp, p, ...rest);
+  });
+  const { tree } = await scan(root);
+  const r = findStaleFolders(tree, SFR);
+  assert.deepEqual(r.items.map((i) => path.relative(root, i.path)), [path.join('viejo', 'ok')]);
+  assert.equal(r.notOffered.find((n) => n.path === path.join(root, 'viejo')).reason, 'contiene-no-leidos');
 });

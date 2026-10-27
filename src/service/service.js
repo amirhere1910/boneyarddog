@@ -123,6 +123,11 @@ class AnalysisService extends EventEmitter {
     return this._call('getStale', options);
   }
 
+  /** Carpetas sin uso: { olderThanDays, minSizeBytes, excludedPaths }. */
+  getStaleFolders(options) {
+    return this._call('getStaleFolders', options);
+  }
+
   summarizeSelection(paths) {
     return this._call('summarizeSelection', paths);
   }
