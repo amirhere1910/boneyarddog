@@ -17,22 +17,28 @@ Una carpeta está **sin uso** si **ningún archivo dentro** fue modificado, ni c
 - Fechas en 0 o inválidas no cuentan. Un archivo sin ninguna fecha válida deja el uso "desconocido", y lo desconocido nunca se ofrece como abandonado.
 - **Limitación:** si el usuario solo *lee* archivos (fotos, música, documentos de consulta) sin modificarlos, la app no puede saberlo. Por eso cada carpeta muestra su archivo más reciente y puede marcarse "Ignorar".
 
-## Copia y transferencia (Fase 3A)
+## Copiar y transferir (Fases 3A y 3B)
 
-El motor (`src/core/transfer.js`) copia carpetas a otro disco (USB/pendrive, disco duro o SSD; destinos NTFS, exFAT o FAT32), **verifica** la copia y, solo si todo quedó verificado, retira el original: **Papelera** (con aviso si puede no caber) o **cuarentena** (`BoneYardDog-Cuarentena`, en el mismo disco, sin borrar). Corre en su propio hilo (`src/service/transfer-service.js`). **No tiene pantallas todavía** y la app normal no lo usa (Fase 3B). Garantías y límites, en lenguaje llano: [`SEGURIDAD-TRANSFERENCIAS.md`](SEGURIDAD-TRANSFERENCIAS.md). Guía para probar a mano con USB reales: [`PRUEBAS-MANUALES.md`](PRUEBAS-MANUALES.md).
+El motor (`src/core/transfer.js`, 3A) copia carpetas a otro disco (USB/pendrive, disco duro o SSD; destinos NTFS, exFAT o FAT32), **verifica** la copia y, solo si todo quedó verificado, retira el original. Corre en su propio hilo (`src/service/transfer-service.js`). Desde la **Fase 3B la app ya copia y transfiere**, con pantallas. Garantías y límites, en lenguaje llano: [`SEGURIDAD-TRANSFERENCIAS.md`](SEGURIDAD-TRANSFERENCIAS.md). Guía para probar a mano con discos reales: [`PRUEBAS-MANUALES.md`](PRUEBAS-MANUALES.md). **Prueba primero con datos de prueba, nunca con datos que no tengas respaldados.**
 
-Decisiones de esta fase:
+Decisiones del usuario (definitivas):
 
-- **El original nunca se elimina por la fuerza**: solo Papelera inyectada o `rename` a cuarentena, y solo tras verificación completa y tras comprobar que el origen no cambió. Una prueba revisa el código fuente y otras espían el sistema de archivos.
-- **Verificación completa por defecto** (huella SHA-256 archivo por archivo); la **rápida** (tamaño y fecha) existe pero se rotula siempre «no comprueba el contenido» y **no permite retirar el original**.
-- **Nunca sobrescribe**: los archivos se abren con «crear, no existir» y cada lote tiene carpeta propia (`BoneYardDog\<fecha>\<unidad>\<ruta original>`), con `ESTADO.json`, `MANIFIESTO.json` y `LEEME.txt`.
-- **Lo que no se copia impide retirar el original**: si una carpeta tiene enlaces, elementos ilegibles o especiales, se copia pero su original no se toca.
-- **Papelera**: se rechaza si el volumen es extraíble o si lo enviado supera el 5 % del disco de origen (estimación de la cuota por omisión de Windows), salvo aceptación explícita.
-- **La Papelera real vive en el proceso principal** (`shell.trashItem`): el motor la recibe inyectada y el hilo se la pide por mensajes.
-- **Una sola excepción a «sin `child_process`»**: `src/main/volume-info.js` (tipo y formato de la unidad por PowerShell, con `execFile`, sin shell, 8 s como máximo y salida validada). Los lanzadores de `scripts/` también lo usan, pero no forman parte de la aplicación.
-- **`BoneYardDog-Cuarentena` es una ruta protegida**: el detector nunca la ofrece.
+- **Transferir = copiar, verificar y enviar el ORIGEN a la Papelera. Copiar = dejar el original.**
+- **No hay cuarentena** (existió en la 3A y se eliminó). `BoneYardDog-Cuarentena` sigue protegida por si alguien ya la creó.
+- Si no cabe en la Papelera, el origen es un disco extraíble (sin Papelera) o Windows rechaza la Papelera, la única pregunta es si se quiere **borrar definitivamente** el original (tras verificar la copia), con una confirmación aparte en rojo («Entiendo que no se podrá recuperar»). Nada viene preseleccionado.
+- **Verificación completa por defecto** (SHA-256 archivo por archivo); la **rápida** (tamaño y fecha) solo para **copiar**; para transferir siempre es completa.
+
+Decisiones técnicas:
+
+- **El original solo se elimina** con la Papelera (inyectada; `shell.trashItem` en el proceso principal) o con el borrado definitivo, y en ambos casos solo tras verificación completa y sin cambios en el origen. Una prueba revisa el código fuente y otras espían el sistema de archivos.
+- **Rutas reales** (`realpath`): las protecciones y los «dentro de» se deciden con la ruta real, no solo con el texto (hallazgo de la revisión de la 3A).
+- **La interfaz nunca manda un destino**: el destino sale del diálogo del sistema o de una unidad que detecta el proceso principal, que lo guarda; los orígenes los confirma el análisis uno por uno (máximo 500).
+- **Nunca sobrescribe**; cada lote tiene carpeta propia (`BoneYardDog\<fecha>\<unidad>\<ruta original>`) con `ESTADO.json`, `MANIFIESTO.json` y `LEEME.txt`.
+- **Lo que no se copia impide retirar el original**: enlaces, elementos ilegibles o especiales.
+- **Una sola excepción a «sin `child_process`»**: `src/main/volume-info.js` (tipo y formato de la unidad por PowerShell, `execFile`, sin shell, 8 s, salida validada).
 - **Pruebas de mutación** (`node scripts/mutaciones-transferencia.js`): se rompe el motor a propósito y se comprueba que alguna prueba falle.
-- **Pulido del mapa**: los cuadros diminutos (menos de 20 px de lado o 500 px²) se pliegan en «Otras» y nunca reciben foco; en la pestaña Mapa la ventana es una columna a pantalla completa; el tope de 500 carpetas seleccionadas avisa sin perder la selección; 40 celdas por defecto.
+- **Pulido del mapa** (3A): cuadros diminutos plegados en «Otras», mapa a pantalla completa, tope de 500 selecciones sin perder la selección.
+- **Lógica del asistente en módulo puro** (`src/shared/transfer-wizard.js`, con pruebas); el dibujo está en `src/renderer/transfer-ui.js`.
 
 ## El mapa (Fase 2C)
 
@@ -93,8 +99,8 @@ Todo el cálculo (celdas, detalles, selección) lo hace el servicio en su hilo; 
 | 2A | Correcciones, servicio de análisis en hilo aparte, esqueleto de Electron seguro y prueba automática en Windows | **Terminada** |
 | 2B | Detección de carpetas grandes sin uso, configuración, ignoradas, unidades y pantalla de lista | **Terminada** |
 | 2C | Mapa visual de cuadros por tamaño con color por actividad, pestañas, menú contextual, detalles y selección con espacio total | **Terminada** |
-| 3A | **Motor** de copia y transferencia (sin pantallas): revisión previa, copia con huella SHA-256, verificación, retirada del original (Papelera o cuarentena) y `verifyBatch`; más el pulido del mapa | **Terminada** (esta) |
-| 3B | Pantallas (revisión previa, progreso, resultado), activar «Copiar…» y «Transferir…» en el menú y la barra, y los canales IPC | Pendiente |
+| 3A | **Motor** de copia y transferencia (sin pantallas): revisión previa, copia con huella SHA-256, verificación, retirada del original y `verifyBatch`; más el pulido del mapa | **Terminada** |
+| 3B | Pantallas (asistente de 3 pasos, resultado, «Verificar una copia anterior»), «Copiar…» y «Transferir…» activos, canales IPC validados, rutas reales, sin cuarentena y con borrado definitivo confirmado | **Terminada** (esta) |
 | 4 | Instalador para Windows y publicación | Pendiente |
 
 Ideas futuras (sin fecha): escanear todas las unidades a la vez; un mapa con las subcarpetas anidadas dentro de cada cuadro.
@@ -118,6 +124,6 @@ Con 50 000 archivos (50 501 nodos), en Linux: ~358 bytes por nodo en memoria y ~
 
 - **Las protecciones se vuelven a comprobar justo antes de actuar**, no solo al listar: entre el escaneo y la acción el disco puede haber cambiado (un enlace nuevo, una carpeta renombrada).
 - **`isProtectedPath` no resuelve nombres cortos 8.3 dentro de la carpeta de usuario** (p. ej. `C:\Users\amir\DOCUME~1`). Hoy no es explotable porque el escáner entrega siempre nombres largos, pero la Fase 3 no debe aceptar rutas escritas a mano sin resolverlas antes.
-- **Copiar y transferir** (los botones del menú y de la barra de selección ya existen, desactivados): copiar primero, **verificar** lo copiado, y solo después enviar el original a la papelera.
+- **Copiar y transferir** (hecho en la 3A y la 3B): copiar primero, **verificar** lo copiado, y solo después enviar el original a la Papelera (o borrarlo definitivamente si se confirma).
 - **Copiar SIN seguir enlaces** (simbólicos ni junctions) y avisar cuáles hay: el escáner ya los marca (`hasLinks`) y no los cuenta en el tamaño.
 - **Archivos de OneDrive "solo en la nube":** su tamaño es el completo, y copiarlos los descarga. Hay que detectarlos y avisar antes de actuar.
