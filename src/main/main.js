@@ -18,6 +18,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { app, BrowserWindow, dialog, ipcMain, session, shell, Menu } = require('electron');
 
+const { Worker } = require('node:worker_threads');
 const { AnalysisService } = require('../service/service');
 const V = require('./validate');
 const { SettingsStore, validatePatch } = require('./settings');
@@ -227,7 +228,12 @@ async function start() {
   lockDownSession(session.defaultSession);
 
   settings = new SettingsStore(path.join(app.getPath('userData'), 'settings.json'));
-  service = new AnalysisService();
+  service = new AnalysisService(
+    SMOKE
+      ? // Solo en la prueba automática: una carpeta de ejemplo que se muestra como protegida.
+        { workerFactory: () => new Worker(path.join(__dirname, '..', 'service', 'analysis-worker.js'), { workerData: { smokeProtectedNames: ['Sistema protegido'] } }) }
+      : undefined,
+  );
   await service.setUsageOptions(usageFrom(settings.get()));
   service.on('progress', (progress) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(V.CHANNELS.progress, progress);

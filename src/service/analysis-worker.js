@@ -12,7 +12,7 @@
  */
 
 const path = require('node:path');
-const { parentPort } = require('node:worker_threads');
+const { parentPort, workerData } = require('node:worker_threads');
 
 const { scan } = require('../core/scanner');
 const analysis = require('../core/analysis');
@@ -39,6 +39,13 @@ let usage = analysis.normalizeUsage();
 let treeVersion = 0;
 let folderCache = null; // { key, value }
 
+// Solo para la prueba automática: nombres de carpeta que se muestran como protegidas
+// (el main los pasa por workerData únicamente en modo smoke; normalmente está vacío).
+const smokeProtectedNames = new Set((workerData && workerData.smokeProtectedNames) || []);
+function protectedPath(p) {
+  return isProtectedPath(p) || smokeProtectedNames.has(path.basename(p));
+}
+
 class ServiceError extends Error {
   constructor(message, code) {
     super(message);
@@ -59,7 +66,7 @@ function toLight(node, extra) {
     size: node.size,
     fileCount: node.fileCount,
     lastUsedMs: node.lastUsedMs === undefined ? null : node.lastUsedMs,
-    protected: isProtectedPath(node.path),
+    protected: protectedPath(node.path),
     hasChildren: node.type === 'folder' && Array.isArray(node.children) && node.children.length > 0,
     ...extra,
   };
@@ -325,7 +332,7 @@ const handlers = {
         fileCount: f.fileCount,
         lastUsedMs: f.lastUsedMs === undefined ? null : f.lastUsedMs,
         daysUnused: days(f.lastUsedMs),
-        protected: isProtectedPath(f.path),
+        protected: protectedPath(f.path),
         hasLinks: Boolean(f.hasLinks || f.subtreeHasLinks),
         unreadable,
         canEnter: Array.isArray(f.children) && f.children.some((x) => x.type === 'folder'),
@@ -394,7 +401,7 @@ const handlers = {
     const stack = [node];
     while (stack.length > 0) {
       const n = stack.pop();
-      if (n !== node && !containsProtected && isProtectedPath(n.path)) containsProtected = true;
+      if (n !== node && !containsProtected && protectedPath(n.path)) containsProtected = true;
       if (n.type === 'folder') {
         if (n !== node) folderCount++;
         if (Array.isArray(n.children)) for (const c of n.children) stack.push(c);
@@ -428,7 +435,7 @@ const handlers = {
       lastUsedMs: last,
       daysUnused: Number.isFinite(last) ? Math.max(0, Math.floor((now - last) / DAY)) : null,
       newestFile: newest,
-      protected: isProtectedPath(node.path),
+      protected: protectedPath(node.path),
       containsProtected,
       hasLinks: Boolean(node.hasLinks || node.subtreeHasLinks),
       unreadable: Boolean(node.incomplete || node.partial || node.subtreeIncomplete),
