@@ -30,14 +30,17 @@ const BRIDGE_KEYS = [
   'chooseDrive',
   'chooseFolder',
   'excludePath',
+  'getDetails',
   'getSettings',
   'getStaleFolders',
+  'getTreemap',
   'includePath',
   'listDrives',
   'onProgress',
   'revealInExplorer',
   'saveSettings',
   'startScan',
+  'summarizeSelection',
 ];
 
 function write(file, bytes, mtimeDaysAgo, atimeDaysAgo = mtimeDaysAgo) {

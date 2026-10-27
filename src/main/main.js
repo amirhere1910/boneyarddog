@@ -194,6 +194,23 @@ function registerIpc() {
     return settings.update({ excludedPaths: current.filter((x) => x !== p) });
   });
 
+  handle(V.CHANNELS.treemap, async (p, options, ...rest) => {
+    V.validateNoArgs(rest);
+    V.validateAbsolutePath(p);
+    const valid = V.validateTreemapOptions(options);
+    return service.getTreemap(p, { minBytes: settings.get().mapMinBytes, ...valid });
+  });
+
+  handle(V.CHANNELS.details, async (p, ...rest) => {
+    V.validateNoArgs(rest);
+    return service.getDetails(V.validateAbsolutePath(p));
+  });
+
+  handle(V.CHANNELS.summarizeSelection, async (paths, ...rest) => {
+    V.validateNoArgs(rest);
+    return service.summarizeSelection(V.validatePathList(paths));
+  });
+
   handle(V.CHANNELS.reveal, async (p, ...rest) => {
     V.validateNoArgs(rest);
     V.validateAbsolutePath(p);

@@ -22,6 +22,9 @@ contextBridge.exposeInMainWorld('byd', {
   listDrives: () => ipcRenderer.invoke('byd:list-drives'),
   chooseDrive: (letter) => ipcRenderer.invoke('byd:choose-drive', letter),
   revealInExplorer: (p) => ipcRenderer.invoke('byd:reveal', p),
+  getTreemap: (p, options) => ipcRenderer.invoke('byd:treemap', p, options),
+  getDetails: (p) => ipcRenderer.invoke('byd:details', p),
+  summarizeSelection: (paths) => ipcRenderer.invoke('byd:summarize-selection', paths),
   /** Suscribe a los avisos de progreso. Devuelve una función para darse de baja. */
   onProgress: (callback) => {
     if (typeof callback !== 'function') throw new TypeError('onProgress necesita una función');

@@ -24,6 +24,7 @@ test('valores por defecto: 90 días, 500 MB, acceso apagado, creación encendida
     minSizeBytes: 524288000,
     useAccessTime: false,
     useCreationTime: true,
+    mapMinBytes: 104857600,
     excludedPaths: [],
   });
   // Los valores por defecto no se pueden mutar desde fuera.
@@ -41,6 +42,8 @@ test('validatePatch: acepta valores válidos y límites', () => {
   assert.deepEqual(S.validatePatch({ staleDays: 7 }), { staleDays: 7 });
   assert.deepEqual(S.validatePatch({ staleDays: 3650 }), { staleDays: 3650 });
   assert.deepEqual(S.validatePatch({ minSizeBytes: 0 }), { minSizeBytes: 0 });
+  assert.deepEqual(S.validatePatch({ mapMinBytes: 0 }), { mapMinBytes: 0 });
+  assert.deepEqual(S.validatePatch({ mapMinBytes: 10 * 1024 ** 4 }), { mapMinBytes: 10 * 1024 ** 4 });
   assert.deepEqual(S.validatePatch({ minSizeBytes: 10 * 1024 ** 4 }), { minSizeBytes: 10 * 1024 ** 4 });
   assert.deepEqual(S.validatePatch({ useAccessTime: true, useCreationTime: false }), { useAccessTime: true, useCreationTime: false });
   assert.deepEqual(S.validatePatch({ excludedPaths: [abs('a'), abs('a'), abs('b')] }), { excludedPaths: [abs('a'), abs('b')] }, 'sin repetidas');
@@ -56,6 +59,10 @@ test('validatePatch: rechaza lo inválido', () => {
     { minSizeBytes: -1 },
     { minSizeBytes: 10 * 1024 ** 4 + 1 },
     { minSizeBytes: 1.5 },
+    { mapMinBytes: -1 },
+    { mapMinBytes: 10 * 1024 ** 4 + 1 },
+    { mapMinBytes: 1.5 },
+    { mapMinBytes: '100' },
     { minSizeBytes: NaN },
     { useAccessTime: 'si' },
     { useCreationTime: 1 },
@@ -102,7 +109,7 @@ test('SettingsStore: guarda y vuelve a leer lo mismo', (t) => {
   const next = store.update({ staleDays: 180, minSizeBytes: 1024 ** 3, useAccessTime: true, excludedPaths: [abs('x')] });
   assert.equal(next.staleDays, 180);
   const again = new S.SettingsStore(file).get();
-  assert.deepEqual(again, { version: 1, staleDays: 180, minSizeBytes: 1024 ** 3, useAccessTime: true, useCreationTime: true, excludedPaths: [abs('x')] });
+  assert.deepEqual(again, { version: 1, staleDays: 180, minSizeBytes: 1024 ** 3, useAccessTime: true, useCreationTime: true, mapMinBytes: 104857600, excludedPaths: [abs('x')] });
   // Un parche parcial conserva el resto.
   store.update({ staleDays: 365 });
   assert.deepEqual(new S.SettingsStore(file).get().excludedPaths, [abs('x')]);
@@ -179,4 +186,22 @@ test('listDrives: en Windows prueba A–Z y devuelve las que existen', async () 
   assert.equal(probadas.length, 26);
   assert.equal(probadas[0], 'A:\\');
   assert.equal(probadas[25], 'Z:\\');
+});
+
+test('mapMinBytes: un archivo de la versión anterior (sin el campo) toma el valor por defecto sin subir la versión', (t) => {
+  const dir = tmpDir(t);
+  const file = path.join(dir, 'settings.json');
+  fs.writeFileSync(file, JSON.stringify({ version: 1, staleDays: 120, minSizeBytes: 1000, useAccessTime: false, useCreationTime: true, excludedPaths: [] }));
+  const store = new S.SettingsStore(file);
+  assert.equal(store.get().version, 1);
+  assert.equal(store.get().staleDays, 120, 'lo demás se conserva');
+  assert.equal(store.get().mapMinBytes, 104857600);
+  store.update({ mapMinBytes: 1024 ** 3 });
+  const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(saved.version, 1);
+  assert.equal(saved.mapMinBytes, 1024 ** 3);
+  // Valor inválido guardado a mano: solo ese campo vuelve a su valor por defecto.
+  fs.writeFileSync(file, JSON.stringify({ ...saved, mapMinBytes: 'mucho' }));
+  assert.equal(new S.SettingsStore(file).get().mapMinBytes, 104857600);
+  assert.equal(new S.SettingsStore(file).get().staleDays, 120);
 });
