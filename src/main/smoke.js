@@ -1220,6 +1220,30 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
       await wizardScenarios();
       await testDataScenarios();
 
+      // --- Capturas del diseño nuevo a dos tamaños (mapa, lista, copias anteriores, ayuda) ---
+      for (const [w, h] of [[720, 520], [1280, 800]]) {
+        win.setSize(w, h);
+        await sleep(500);
+        await js("document.getElementById('tab-mapa').click()");
+        await sleep(400);
+        await snapshot(`diseno-mapa-${w}x${h}.png`);
+        await js("document.getElementById('tab-lista').click()");
+        await sleep(400);
+        await snapshot(`diseno-lista-${w}x${h}.png`);
+        await js("document.getElementById('btn-verificar-copia').click()");
+        await sleep(800);
+        await snapshot(`diseno-copias-${w}x${h}.png`);
+        const dlg = await js("(() => { const d = document.getElementById('dlg-transferir'); const r = d.getBoundingClientRect(); return { abierto: d.open, dentro: r.left >= 0 && r.top >= 0 && r.right <= window.innerWidth + 1 && r.bottom <= window.innerHeight + 1 }; })()");
+        check(`diseño ${w}×${h}: «Copias anteriores» cabe en la ventana`, dlg.abierto && dlg.dentro, dlg);
+        await js("document.getElementById('dlg-cerrar').click()");
+        await sleep(300);
+        await js("document.getElementById('nav-ayuda').click()");
+        await sleep(400);
+        await snapshot(`diseno-ayuda-${w}x${h}.png`);
+        await js("document.getElementById('ayuda-pruebas').open = false");
+      }
+      await js("document.getElementById('tab-mapa').click()");
+
       const finalSettings = savedSettings();
       check('settings.json con el esquema esperado', finalSettings.version === 1 && finalSettings.staleDays === 90 && finalSettings.minSizeBytes === 1000 && finalSettings.mapMinBytes === 1000, finalSettings);
 
