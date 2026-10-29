@@ -12,26 +12,22 @@
   const $ = (id) => document.getElementById(id);
   const dlg = $('dlg-transferir');
 
-  const ui = {
-    open: false,
-    kind: 'transfer', // 'transfer' | 'verify'
-    mode: 'copy', // 'copy' | 'move'
-    verify: 'full',
-    items: [], // [{ path, name }]
-    totalBytes: null,
-    destination: null, // lo que el principal confirmó: { path, letter, driveType, fileSystem, sizeBytes, freeBytes }
-    drives: [],
-    step: 'destino', // destino | revision | progreso | resultado | verificar
-    review: null,
-    recycleChoice: null, // null | 'borrar' | 'dejar'
-    understood: false,
-    running: false,
-    result: null,
-    runId: null,
-    verifyBatch: null,
-    token: 0,
-    hooks: { onRemoved: () => {}, onClosed: () => {} },
-  };
+  // TODO lo que se ve del asistente sale de este estado (src/shared/transfer-wizard.js: newWizard, reduce, wizardView).
+  // Al abrir el diálogo se REEMPLAZA entero por uno nuevo: nada sobrevive de una operación anterior.
+  const hooks = { onRemoved: () => {}, onClosed: () => {} };
+  let tokenCounter = 0;
+  const fresh = (kind, mode, items) => ({ ...W.newWizard(kind, mode, items), open: false, drives: [], totalBytes: null, running: false, token: ++tokenCounter });
+  const ui = fresh('transfer', 'copy', []);
+  /** Cambia el estado con una acción pura y vuelve a dibujar lo que depende de él. */
+  function dispatch(action) {
+    Object.assign(ui, W.reduce(ui, action));
+    render();
+  }
+  function replaceState(next) {
+    for (const k of Object.keys(ui)) delete ui[k];
+    Object.assign(ui, next);
+    render();
+  }
   let unsubscribe = null;
 
   const el = (tag, className, text) => {
@@ -49,8 +45,36 @@
   const driveTypeText = (t) => DRIVE_TYPES[t] || DRIVE_TYPES.unknown;
 
   function showError(text) {
-    $('dlg-error').textContent = text;
-    $('dlg-error').hidden = text === '';
+    dispatch({ type: 'error', text });
+  }
+
+  /** Dibuja lo que depende del estado: aviso de «Cancelando…», botón de cancelar, barra, tarjetas, error y casillas. */
+  function render() {
+    const v = W.wizardView(ui, Date.now());
+    $('dlg-error').textContent = v.errorText;
+    $('dlg-error').hidden = v.errorText === '';
+    $('prog-aviso').textContent = v.notice;
+    $('dlg-cancelar-op').disabled = v.cancelDisabled;
+    const pv = v.progress;
+    $('prog-fase').textContent = pv.phase;
+    $('prog-barra').setAttribute('aria-valuenow', String(pv.percent));
+    $('prog-barra').setAttribute('aria-valuetext', `${pv.phase}, ${pv.percent} %`);
+    $('prog-relleno').style.width = `${pv.percent}%`;
+    $('prog-porcentaje').textContent = `${pv.percent} %`;
+    $('prog-bytes').textContent = pv.bytesText;
+    $('prog-archivos').textContent = pv.filesText;
+    $('prog-velocidad').textContent = pv.speedText;
+    $('prog-eta').textContent = pv.etaText;
+    $('prog-archivo').textContent = pv.currentFile;
+    $('prog-archivo').title = pv.currentFileFull;
+    $('prog-tardando').textContent = v.stalledNotice;
+    $('prog-tardando').hidden = v.stalledNotice === '';
+    document.body.dataset.fase = ui.progress && ui.progress.fase ? ui.progress.fase : '';
+    // Casillas y opciones: reflejan SIEMPRE el estado (una apertura nueva no hereda marcas viejas).
+    $('rev-entiendo').checked = ui.understood === true;
+    $('res-entiendo').checked = ui.resultConfirm === true;
+    for (const r of document.querySelectorAll('input[name="papelera"]')) r.checked = r.value === ui.recycleChoice;
+    for (const r of document.querySelectorAll('input[name="verif"]')) r.checked = r.value === (ui.verify === 'quick' ? 'quick' : 'full');
   }
 
   function setReason(text) {
@@ -64,9 +88,9 @@
 
   function setStep(step, focusHeading = true) {
     ui.step = step;
-    for (const s of ['destino', 'revision', 'progreso', 'resultado', 'verificar']) show(`paso-${s}`, s === step);
-    $('dlg-titulo').textContent = ui.kind === 'verify' ? 'Verificar una copia anterior' : TITLES[ui.mode];
-    $('dlg-paso').textContent = ui.kind === 'verify' ? '' : STEP_LABELS[step] || '';
+    for (const s of ['destino', 'revision', 'progreso', 'resultado', 'copias']) show(`paso-${s}`, s === step);
+    $('dlg-titulo').textContent = ui.kind === 'copies' ? 'Copias anteriores' : TITLES[ui.mode];
+    $('dlg-paso').textContent = ui.kind === 'copies' ? '' : STEP_LABELS[step] || '';
     updateFooter();
     if (focusHeading) {
       const heading = step === 'resultado' ? $('res-titular') : $('dlg-titulo');
@@ -77,15 +101,13 @@
   /** Qué botones del pie se ven en cada paso, y cuáles están activos (con su razón a la vista). */
   function updateFooter() {
     const s = ui.step;
-    const v = ui.kind === 'verify';
+    const v = ui.kind === 'copies';
     show('dlg-atras', s === 'revision');
     show('dlg-cancelar', s === 'destino' || s === 'revision');
     show('dlg-siguiente', s === 'destino');
     show('dlg-empezar', s === 'revision');
-    show('dlg-cancelar-op', (s === 'progreso' && ui.running) || (s === 'verificar' && ui.running));
-    show('dlg-verificar-ya', v && s === 'verificar' && !ui.running);
+    show('dlg-cancelar-op', s === 'progreso' && (ui.running || ui.phase !== 'idle'));
     show('dlg-cerrar', (s === 'resultado' && !ui.running) || (v && !ui.running));
-    $('dlg-cancelar-op').disabled = false;
 
     let reason = '';
     if (s === 'destino') {
@@ -97,9 +119,6 @@
       $('dlg-empezar').disabled = !can.ok || ui.running;
       reason = can.ok ? '' : can.reason;
       $('dlg-atras').disabled = ui.running;
-    } else if (s === 'verificar') {
-      $('dlg-verificar-ya').disabled = !ui.verifyBatch || ui.running;
-      reason = ui.verifyBatch ? '' : 'Elige primero la carpeta de la copia.';
     }
     setReason(reason);
   }
@@ -107,30 +126,11 @@
   // --------------------------------------------------------------- abrir/cerrar
 
   function resetState(kind, mode, items) {
-    ui.token++;
-    ui.kind = kind;
-    ui.mode = mode;
-    ui.verify = 'full';
-    ui.items = items;
-    ui.totalBytes = null;
-    ui.destination = null;
-    ui.drives = [];
-    ui.review = null;
-    ui.recycleChoice = null;
-    ui.understood = false;
-    ui.running = false;
-    ui.result = null;
-    ui.runId = null;
-    ui.verifyBatch = null;
-    showError('');
+    replaceState(fresh(kind, mode, items));
     setReason('');
-    for (const r of document.querySelectorAll('input[name="papelera"]')) r.checked = false;
-    for (const r of document.querySelectorAll('input[name="verif"]')) r.checked = r.value === 'full';
-    $('rev-entiendo').checked = false;
-    $('res-entiendo').checked = false;
-    $('ver-rapida').checked = false;
     $('res-borrar').disabled = true;
-    for (const id of ['rev-borrar-confirmar', 'rev-papelera', 'res-quitar-confirmar', 'res-verificacion', 'res-papelera-fallo', 'ver-resultado', 'ver-progreso']) show(id, false);
+    for (const id of ['rev-borrar-confirmar', 'rev-papelera', 'res-quitar-confirmar', 'res-verificacion', 'res-papelera-fallo', 'cop-resultado', 'cop-progreso']) show(id, false);
+    $('res-aviso-reescanear').hidden = true;
   }
 
   function openDialog() {
@@ -145,7 +145,7 @@
     ui.open = false;
     delete document.body.dataset.asistente;
     if (dlg.open) dlg.close();
-    ui.hooks.onClosed();
+    hooks.onClosed();
   }
 
   function subscribeProgress(handler) {
@@ -232,9 +232,9 @@
   }
 
   function invalidateReview() {
-    ui.review = null;
-    ui.recycleChoice = null;
-    ui.understood = false;
+    dispatch({ type: 'review', review: null });
+    dispatch({ type: 'recycle-choice', choice: null });
+    dispatch({ type: 'understood', value: false });
   }
 
   function renderDestination() {
@@ -391,32 +391,12 @@
   }
 
   function onRecycleChoice(value) {
-    ui.recycleChoice = value;
-    if (value !== 'borrar') {
-      ui.understood = false;
-      $('rev-entiendo').checked = false;
-    }
+    dispatch({ type: 'recycle-choice', choice: value });
     renderDeleteConfirmation();
     updateFooter();
   }
 
   // ---------------------------------------------------------- paso 3: progreso
-
-  function renderProgress(ev) {
-    const v = W.progressView(ev, ui.mode === 'move' ? 'full' : ui.verify);
-    $('prog-fase').textContent = v.phase;
-    $('prog-barra').setAttribute('aria-valuenow', String(v.percent));
-    $('prog-barra').setAttribute('aria-valuetext', `${v.phase}, ${v.percent} %`);
-    $('prog-relleno').style.width = `${v.percent}%`;
-    $('prog-porcentaje').textContent = `${v.percent} %`;
-    $('prog-bytes').textContent = v.bytesText;
-    $('prog-archivos').textContent = v.filesText;
-    $('prog-velocidad').textContent = v.speedText;
-    $('prog-eta').textContent = v.etaText;
-    $('prog-archivo').textContent = v.currentFile;
-    $('prog-archivo').title = v.currentFileFull;
-    document.body.dataset.fase = ev && ev.fase ? ev.fase : '';
-  }
 
   async function start() {
     const can = W.canStart({ mode: ui.mode, review: ui.review, recycleChoice: ui.recycleChoice, understood: ui.understood });
@@ -449,30 +429,28 @@
       planId = again.value.planId;
     }
     const runVerify = W.effectiveVerify(ui.mode, ui.verify);
+    // Una operación NUEVA parte de cero: se reinicia progreso, «Cancelando…», error, resultado y confirmaciones del resultado.
+    dispatch({ type: 'start-operation' });
     setStep('progreso');
-    renderProgress({ fase: 'planificando', totalBytes: ui.review.plan ? ui.review.plan.totals.bytes : 0, totalFiles: ui.review.plan ? ui.review.plan.totals.files : 0, overallBytesDone: 0, overallFilesDone: 0 });
-    subscribeProgress((ev) => {
-      if (ui.step === 'progreso') renderProgress(ev);
-    });
+    subscribeProgress((ev) => dispatch({ type: 'progress', event: ev, now: Date.now() }));
     const res = await byd.transferRun(planId);
     unsubscribeProgress();
     ui.running = false;
     if (!res.ok) {
       // Sin resultado del motor NO se dice «listo»: se explica que no se pudo saber qué pasó.
+      dispatch({ type: 'failed', error: '' });
       showResultUnknown(res.error);
       return;
     }
-    ui.result = res.value;
-    ui.runId = res.value.runId;
+    dispatch({ type: 'finished', result: res.value });
     ui.verify = runVerify;
     renderResult();
-    ui.hooks.onRemoved(W.removedSources(res.value));
+    hooks.onRemoved(W.removedSources(res.value));
   }
 
   async function cancelOperation() {
-    $('dlg-cancelar-op').disabled = true;
-    $('prog-aviso').textContent = 'Cancelando… Los originales no se tocan.';
-    $('ver-progreso-texto').textContent = 'Cancelando…';
+    dispatch({ type: 'cancel' });
+    $('cop-progreso-texto').textContent = 'Cancelando…';
     await byd.transferCancel();
   }
 
@@ -522,13 +500,14 @@
           for (const e of errs.slice(0, 50)) ul.append(el('li', '', `${e.ruta || '(carpeta)'}: ${e.mensaje}`));
           li.append(ul);
           const total = c.erroresTotal || errs.length;
-          if (total > errs.length) li.append(el('span', 'res-detalle', `…y ${new Intl.NumberFormat('es').format(total - errs.length)} más. Están todos en MANIFIESTO.json, dentro de la carpeta de la copia.`));
+          if (total > errs.length) li.append(el('span', 'res-detalle', `…y ${new Intl.NumberFormat('es').format(total - errs.length)} más.`));
         }
         return li;
       }),
     );
-    $('res-lote').textContent = res.batchFolder ? `Copia en: ${res.batchFolder}` : '';
-    show('res-lote', Boolean(res.batchFolder));
+    const target = W.revealTarget(res);
+    $('res-lote').textContent = target ? `${res.carpetas.filter((c) => c.verificada).length > 1 ? 'Copias en' : 'Copia en'}: ${res.carpetas.filter((c) => c.verificada).length > 1 ? res.destinoRaiz : target}` : '';
+    show('res-lote', Boolean(target));
 
     const b = W.resultButtons(res);
     show('res-abrir', b.openCopy);
@@ -550,7 +529,7 @@
   }
 
   async function revealCopy() {
-    const res = await byd.revealInExplorer(ui.result.batchFolder);
+    const res = await byd.revealInExplorer(W.revealTarget(ui.result));
     if (!res.ok) showError(`No se pudo abrir el Explorador: ${W.translateError(res.error)}`);
   }
 
@@ -578,15 +557,23 @@
     subscribeProgress((ev) => {
       $('res-verif-titular').textContent = `Verificando la copia… ${ev.filesDone || 0} de ${ev.filesTotal || 0} archivos`;
     });
-    const res = await byd.verifyBatchRun({ mode: 'full' });
+    // Cada carpeta copiada tiene su registro (en el PC): se verifica una por una con ese registro.
+    const ids = ui.result.carpetas.filter((c) => c.verificada && c.registroId).map((c) => c.registroId);
+    let last = null;
+    const heads = [];
+    for (const id of ids) {
+      const res = await byd.copiesVerify(id, { mode: 'full' });
+      if (!res.ok) {
+        heads.push(`No se pudo verificar: ${W.translateError(res.error)}`);
+        continue;
+      }
+      last = res.value;
+      heads.push(W.verifyView(res.value).headline);
+    }
     unsubscribeProgress();
     ui.running = false;
-    if (!res.ok) {
-      $('res-verif-titular').textContent = `No se pudo verificar: ${W.translateError(res.error)}`;
-      updateFooter();
-      return;
-    }
-    renderVerification(res.value, { caja: 'res-verificacion', titular: 'res-verif-titular', lista: 'res-verif-lista' });
+    if (last) renderVerification(last, { caja: 'res-verificacion', titular: 'res-verif-titular', lista: 'res-verif-lista' });
+    if (ids.length > 1 || !last) $('res-verif-titular').textContent = heads.join(' ');
     updateFooter();
   }
 
@@ -634,60 +621,100 @@
     }
     ui.result = res.value.resumen;
     renderResult();
-    ui.hooks.onRemoved(W.removedSources(ui.result));
+    hooks.onRemoved(W.removedSources(ui.result));
   }
 
-  // ---------------------------------------------- verificar una copia anterior
+  // ------------------------------------------------------------ copias anteriores
 
-  function openVerify() {
+  const kindOf = { full: 'completa', quick: 'rápida (solo tamaño y fecha)' };
+  const fate = (o) => ({ papelera: 'el original se envió a la Papelera', 'borrado-definitivo': 'el original se borró definitivamente', 'borrado-parcial': 'el borrado del original quedó a medias', 'sin-tocar': 'el original sigue donde estaba' })[o && o.accion] || '';
+  let lastVerify = null;
+
+  async function openCopies() {
     if (ui.open) return;
-    resetState('verify', 'copy', []);
-    $('ver-elegida').textContent = 'Todavía no elegiste ninguna copia.';
-    setStep('verificar');
+    resetState('copies', 'copy', []);
+    lastVerify = null;
+    show('cop-resultado', false);
+    show('cop-progreso', false);
+    setStep('copias');
     openDialog();
+    await renderCopies();
   }
 
-  async function chooseBatch() {
-    showError('');
-    const res = await byd.verifyBatchChooseFolder();
+  async function renderCopies() {
+    const res = await byd.copiesList();
+    const list = $('cop-lista');
+    list.replaceChildren();
     if (!res.ok) {
-      showError(W.translateError(res.error));
+      showError(`No se pudo leer la lista de copias: ${W.translateError(res.error)}`);
+      show('cop-vacio', false);
       return;
     }
-    if (!res.value) return;
-    ui.verifyBatch = res.value.path;
-    $('ver-elegida').textContent = `Copia elegida: ${res.value.path}`;
-    show('ver-resultado', false);
-    updateFooter();
+    show('cop-vacio', res.value.length === 0);
+    for (const r of res.value) {
+      const li = el('li', 'cop-fila');
+      li.dataset.id = r.id;
+      const head = el('div', 'cop-cabecera');
+      head.append(el('strong', 'cop-nombre', r.nombre), el('span', 'nota', `${new Date(r.fecha).toLocaleString('es')} · ${W.formatBytes(r.totalBytes)} · ${plural(r.archivosTotal, 'archivo', 'archivos')}`));
+      li.append(head);
+      li.append(el('p', 'ruta', `De: ${r.origen}`), el('p', 'ruta', `A: ${r.destino}`));
+      li.append(el('p', 'nota', `Verificación al copiar: ${kindOf[r.verificacion] || r.verificacion} · ${r.sistemaDeArchivos} · ${r.modo === 'move' ? 'transferida' : 'copiada'}${fate(r.original) ? ` · ${fate(r.original)}` : ''}`));
+      const actions = el('div', 'fila fila-envuelve');
+      const verify = el('button', 'btn-cop-verificar', 'Verificar');
+      verify.type = 'button';
+      verify.setAttribute('aria-label', `Verificar la copia ${r.nombre}`);
+      verify.addEventListener('click', () => verifyCopy(r, verify));
+      const drop = el('button', 'secundario btn-cop-quitar', 'Quitar de la lista');
+      drop.type = 'button';
+      drop.setAttribute('aria-label', `Quitar ${r.nombre} de la lista (no borra la copia)`);
+      drop.addEventListener('click', async () => {
+        const out = await byd.copiesRemove(r.id);
+        if (!out.ok) showError(W.translateError(out.error));
+        else renderCopies();
+      });
+      actions.append(verify, drop);
+      li.append(actions);
+      list.append(li);
+    }
   }
 
-  async function runVerifyBatch() {
-    if (!ui.verifyBatch || ui.running) return;
+  function showVerification(res, all = false) {
+    const view = W.verifyView(res);
+    show('cop-resultado', true);
+    $('cop-titular').textContent = view.headline;
+    $('cop-titular').dataset.tono = view.tone;
+    const lines = all ? res.problemas.filter((p) => !p.aviso).slice(0, 2000).map((p) => ({ ruta: p.ruta, texto: W.problemText(p) })) : view.lines;
+    $('cop-problemas').replaceChildren(...lines.map((l) => el('li', '', `${l.ruta}: ${l.texto}`)), ...(!all && view.hidden > 0 ? [el('li', 'nota', `…y ${view.hidden} más.`)] : []));
+    show('cop-ver-todos', !all && view.hidden > 0);
+    $('cop-titular').focus();
+  }
+
+  async function verifyCopy(record, button) {
+    if (ui.running) return;
     showError('');
     ui.running = true;
-    show('ver-resultado', false);
-    show('ver-progreso', true);
-    $('ver-relleno').style.width = '0%';
-    $('ver-progreso-texto').textContent = 'Verificando…';
-    updateFooter();
+    button.disabled = true;
+    show('cop-resultado', false);
+    show('cop-progreso', true);
+    $('cop-relleno').style.width = '0%';
+    $('cop-progreso-texto').textContent = `Verificando «${record.nombre}»…`;
     subscribeProgress((ev) => {
-      const pct = ev.filesTotal > 0 ? Math.min(99, Math.floor((ev.filesDone / ev.filesTotal) * 100)) : 0;
-      $('ver-relleno').style.width = `${pct}%`;
-      $('ver-relleno').parentElement.setAttribute('aria-valuenow', String(pct));
-      $('ver-progreso-texto').textContent = `${ev.filesDone || 0} de ${ev.filesTotal || 0} archivos`;
+      const pct = ev.filesTotal > 0 ? Math.min(99, Math.floor(((ev.filesDone || 0) / ev.filesTotal) * 100)) : 0;
+      $('cop-relleno').style.width = `${pct}%`;
+      $('cop-relleno').parentElement.setAttribute('aria-valuenow', String(pct));
+      $('cop-progreso-texto').textContent = `«${record.nombre}»: ${ev.filesDone || 0} de ${ev.filesTotal || 0} archivos`;
     });
-    const res = await byd.verifyBatchRun({ mode: $('ver-rapida').checked ? 'quick' : 'full' });
+    const res = await byd.copiesVerify(record.id, { mode: 'full' });
     unsubscribeProgress();
     ui.running = false;
-    show('ver-progreso', false);
+    button.disabled = false;
+    show('cop-progreso', false);
     if (!res.ok) {
       showError(`No se pudo verificar: ${W.translateError(res.error)}`);
-      updateFooter();
       return;
     }
-    renderVerification(res.value, { caja: 'ver-resultado', titular: 'ver-titular', lista: 'ver-lista' });
-    $('ver-titular').focus();
-    updateFooter();
+    lastVerify = res.value;
+    showVerification(res.value);
   }
 
   // ------------------------------------------------------------------ eventos
@@ -703,10 +730,9 @@
   $('dlg-cerrar').addEventListener('click', closeDialog);
   $('dlg-empezar').addEventListener('click', start);
   $('dlg-cancelar-op').addEventListener('click', cancelOperation);
-  $('dlg-verificar-ya').addEventListener('click', runVerifyBatch);
   for (const r of document.querySelectorAll('input[name="verif"]')) {
     r.addEventListener('change', () => {
-      if (r.checked) ui.verify = r.value;
+      if (r.checked) dispatch({ type: 'set-verify', verify: r.value });
       updateFooter();
     });
   }
@@ -716,10 +742,11 @@
     });
   }
   $('rev-entiendo').addEventListener('change', () => {
-    ui.understood = $('rev-entiendo').checked;
+    dispatch({ type: 'understood', value: $('rev-entiendo').checked });
     updateFooter();
   });
   $('res-entiendo').addEventListener('change', () => {
+    dispatch({ type: 'result-confirm', value: $('res-entiendo').checked });
     $('res-borrar').disabled = !$('res-entiendo').checked || ui.running;
   });
   $('res-borrar').addEventListener('click', deleteAfterFailure);
@@ -731,7 +758,7 @@
     show('res-quitar-confirmar', false);
     $('res-quitar').focus();
   });
-  $('ver-elegir').addEventListener('click', chooseBatch);
+  $('cop-ver-todos').addEventListener('click', () => lastVerify && showVerification(lastVerify, true));
   // Esc cierra el diálogo salvo a mitad de una operación: ahí solo se sale con «Cancelar la operación».
   dlg.addEventListener('cancel', (e) => {
     if (!W.canClose(ui)) {
@@ -747,15 +774,15 @@
       ui.open = false;
       unsubscribeProgress();
       delete document.body.dataset.asistente;
-      ui.hooks.onClosed();
+      hooks.onClosed();
     }
   });
 
   window.BYDTransferUI = {
     openWizard,
-    openVerify,
+    openCopies,
     isOpen: () => ui.open,
     isBusy: () => ui.running,
-    setHooks: (hooks) => Object.assign(ui.hooks, hooks),
+    setHooks: (h) => Object.assign(hooks, h),
   };
 })();

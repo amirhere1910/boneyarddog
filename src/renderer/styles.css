@@ -371,3 +371,10 @@ button.peligro { background: var(--peligro-borde); border-color: var(--peligro-b
 .ayuda-cuerpo h2 { margin-top: 8px; }
 .pie-app { margin-top: 16px; padding-top: 8px; border-top: 1px solid var(--borde); color: var(--suave); font-size: 0.85rem; overflow-wrap: anywhere; }
 body[data-estado="resultado"][data-pestana="mapa"] .pie-app { display: none; }
+
+/* --- Fase 5: copias anteriores --------------------------------------------------------- */
+.cop-lista { list-style: none; padding: 0 !important; display: grid; gap: 8px; }
+.cop-fila { padding: 8px 12px; border: 1px solid var(--borde); border-radius: 8px; }
+.cop-cabecera { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+.cop-nombre { overflow-wrap: anywhere; }
+.cop-fila .ruta { margin: 2px 0; }

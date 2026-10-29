@@ -14,12 +14,19 @@
       <h1>BoneYardDog</h1>
       <p class="subtitulo">Encuentra carpetas grandes que llevan tiempo sin usarse.</p>
     </div>
-    <button id="btn-verificar-copia" type="button" class="secundario cabecera-boton">Verificar una copia anterior…</button>
+    <button id="btn-verificar-copia" type="button" class="secundario cabecera-boton">Copias anteriores…</button>
   </header>
 
   <p class="aviso" role="note">Prueba primero con datos de prueba, nunca con datos que no tengas respaldados.</p>
 
   <p id="mensaje" class="mensaje" role="alert" hidden></p>
+
+  <!-- Copias incompletas que quedaron de una sesión anterior (cierre forzado, corte, desconexión) -->
+  <section id="aviso-pendientes" class="panel caja caja-aviso" aria-labelledby="t-pendientes" hidden>
+    <h2 id="t-pendientes">Quedó una copia incompleta</h2>
+    <p>BoneYardDog dejó a medias una copia en una sesión anterior. Está marcada con «.copiando» para que no se confunda con una copia buena. Puedes borrarla (solo borra esa carpeta provisional; tus originales no se tocan).</p>
+    <ul id="lista-pendientes" class="lista"></ul>
+  </section>
 
   <!-- 1. Inicio -->
   <section id="vista-inicio" class="panel" aria-labelledby="t-inicio">
@@ -285,6 +292,7 @@
         </dl>
         <p class="nota">Archivo actual:</p>
         <p id="prog-archivo" class="ruta ruta-actual"></p>
+        <p id="prog-tardando" class="caja caja-aviso prog-tardando" role="status" hidden></p>
         <p id="prog-aviso" class="nota">Si cancelas, los originales no se tocan.</p>
       </section>
 
@@ -321,19 +329,20 @@
         </div>
       </section>
 
-      <!-- Verificar una copia anterior -->
-      <section id="paso-verificar" aria-label="Verificar una copia anterior" hidden>
-        <p>Elige la carpeta de una copia que hizo BoneYardDog (la que tiene la fecha, dentro de «BoneYardDog», y contiene <code>MANIFIESTO.json</code>). Conviene hacerlo después de expulsar y volver a conectar el disco.</p>
-        <div class="fila"><button id="ver-elegir" type="button" class="secundario">Elegir la carpeta de la copia…</button></div>
-        <p id="ver-elegida" class="destino-elegido" role="status">Todavía no elegiste ninguna copia.</p>
-        <label class="check"><input type="checkbox" id="ver-rapida"> Solo tamaño y fecha (rápida; no comprueba el contenido)</label>
-        <div id="ver-progreso" hidden>
-          <div class="barra barra-real" role="progressbar" aria-label="Progreso de la verificación" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="ver-relleno" class="barra-relleno"></div></div>
-          <p id="ver-progreso-texto" class="nota" role="status"></p>
+      <!-- Copias anteriores (el registro vive en este PC, no en el disco de destino) -->
+      <section id="paso-copias" aria-label="Copias anteriores" hidden>
+        <p>Estas son las copias que hizo BoneYardDog en este equipo. «Verificar» vuelve a comparar cada archivo de la copia con lo que se guardó al copiarla.</p>
+        <p id="cop-usb" class="nota">Los discos USB pueden servir la verificación desde memoria: expulsa y vuelve a conectar el disco antes de verificar.</p>
+        <p id="cop-vacio" class="vacio" hidden>Todavía no hay copias registradas. Cuando copies o transfieras una carpeta, aparecerá aquí.</p>
+        <ul id="cop-lista" class="cop-lista" aria-label="Copias anteriores"></ul>
+        <div id="cop-progreso" hidden>
+          <div class="barra barra-real" role="progressbar" aria-label="Progreso de la verificación" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="cop-relleno" class="barra-relleno"></div></div>
+          <p id="cop-progreso-texto" class="nota" role="status"></p>
         </div>
-        <div id="ver-resultado" class="caja" role="status" hidden>
-          <h3 id="ver-titular" tabindex="-1"></h3>
-          <ul id="ver-lista"></ul>
+        <div id="cop-resultado" class="caja" role="status" hidden>
+          <h3 id="cop-titular" tabindex="-1"></h3>
+          <ul id="cop-problemas"></ul>
+          <div class="fila"><button id="cop-ver-todos" type="button" class="secundario" hidden>Ver todos</button></div>
         </div>
       </section>
     </div>
@@ -346,7 +355,6 @@
         <button id="dlg-siguiente" type="button">Siguiente</button>
         <button id="dlg-empezar" type="button">Empezar</button>
         <button id="dlg-cancelar-op" type="button" class="secundario">Cancelar la operación</button>
-        <button id="dlg-verificar-ya" type="button">Verificar</button>
         <button id="dlg-cerrar" type="button">Cerrar</button>
       </div>
     </div>
@@ -358,5 +366,6 @@
   <script src="transfer-ui.js"></script>
   <script src="app.js"></script>
   <script src="datos-prueba-ui.js"></script>
+  <script src="pendientes-ui.js"></script>
 </body>
 </html>

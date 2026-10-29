@@ -408,7 +408,7 @@
   TUI.setHooks({ onRemoved: onOriginalsRemoved, onClosed: () => { const t = document.querySelector('#barra-seleccion:not([hidden]) #btn-sel-copiar') || $('btn-verificar-copia'); if (t) t.focus(); } });
   $('btn-sel-copiar').addEventListener('click', () => startTransfer('copy', null));
   $('btn-sel-transferir').addEventListener('click', () => startTransfer('move', null));
-  $('btn-verificar-copia').addEventListener('click', () => TUI.openVerify());
+  $('btn-verificar-copia').addEventListener('click', () => TUI.openCopies());
 
   // ---------------------------------------------------------------- selección
 

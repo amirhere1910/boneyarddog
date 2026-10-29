@@ -63,7 +63,6 @@ const context = {
   testDataBusy: false,
   testDataAbort: null,
   testRunIds: new Set(), // transferencias hechas en esta sesión cuyos orígenes son solo los datos de prueba
-  smokeBatchFolder: null,
   closeDialogHook: null,
 };
 let mainWindow = null;
@@ -512,7 +511,7 @@ async function start() {
   transferService = new TransferService(
     SMOKE
       ? // Solo en la prueba automática: carpetas «Removible …» se tratan como discos sin Papelera.
-        { trash, workerFactory: () => new Worker(path.join(__dirname, '..', 'service', 'transfer-worker.js'), { workerData: { hasTrash: true, progressIntervalMs: 100, smokeRemovablePrefix: 'Removible ', registryDir } }) }
+        { trash, workerFactory: () => new Worker(path.join(__dirname, '..', 'service', 'transfer-worker.js'), { workerData: { hasTrash: true, progressIntervalMs: 100, smokeRemovablePrefix: 'Removible ', smokeSlowPrefix: 'Lenta ', registryDir } }) }
       : { trash, registryDir },
   );
   transferService.on('progress', (progress) => {

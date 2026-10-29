@@ -296,7 +296,7 @@
       case 'con-errores':
         return { icon: '✖', tone: 'error', label: 'Con errores', detail: motivo || 'No se pudo copiar o verificar todo. El original no se tocó.' };
       case 'cancelada':
-        return { icon: '⏹', tone: 'aviso', label: 'Cancelada', detail: 'El original no se tocó. Puede haber una copia incompleta: puedes quitarla.' };
+        return { icon: '⏹', tone: 'aviso', label: 'Cancelada', detail: motivo || 'Cancelada. Los originales no se tocaron.' };
       default:
         return { icon: '?', tone: 'aviso', label: 'Estado desconocido', detail: motivo };
     }

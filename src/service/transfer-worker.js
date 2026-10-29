@@ -22,6 +22,8 @@ const { createRegistry } = require('../core/registro');
 const hasTrash = Boolean(workerData && workerData.hasTrash);
 // Solo la prueba automática lo pasa: las carpetas cuyo nombre empieza así se tratan como si estuvieran en un disco extraíble
 // (sin Papelera), para poder recorrer en la interfaz el camino «probablemente no cabe en la Papelera».
+// Solo la prueba automática: las carpetas cuyo nombre empieza así se copian despacio (1,2 s por archivo) para poder cancelarlas a mitad.
+const smokeSlowPrefix = workerData && typeof workerData.smokeSlowPrefix === 'string' ? workerData.smokeSlowPrefix : null;
 const smokeRemovablePrefix = workerData && typeof workerData.smokeRemovablePrefix === 'string' ? workerData.smokeRemovablePrefix : null;
 const progressIntervalMs = workerData && Number.isFinite(workerData.progressIntervalMs) && workerData.progressIntervalMs >= 0 ? workerData.progressIntervalMs : 200;
 const version = (() => {
@@ -145,6 +147,9 @@ const handlers = {
       const result = await engine.run(plan, {
         signal: controller.signal,
         progressIntervalMs,
+        hooks: smokeSlowPrefix
+          ? { beforeFile: async ({ folder }) => (require('node:path').basename(folder.source).startsWith(smokeSlowPrefix) ? new Promise((r) => setTimeout(r, 1200)) : undefined) }
+          : {},
         onProgress: (p) => parentPort.postMessage({ type: 'progress', ...p }),
       });
       const runId = crypto.randomBytes(8).toString('hex');
