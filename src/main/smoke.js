@@ -1221,6 +1221,12 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
       await testDataScenarios();
 
       // --- Capturas del diseño nuevo a dos tamaños (mapa, lista, copias anteriores, ayuda) ---
+      if ((await read()).estado !== 'resultado') {
+        await js("document.getElementById('btn-nuevo') && document.getElementById('btn-nuevo').click()");
+        context.smokeFolder = fixture.root;
+        await js("document.getElementById('btn-elegir').click()");
+        await settled((st) => st.mapa.carpeta === fixture.root && st.mapa.celdas.length > 0, 'el mapa principal para las capturas');
+      }
       for (const [w, h] of [[720, 520], [1280, 800]]) {
         win.setSize(w, h);
         await sleep(500);
