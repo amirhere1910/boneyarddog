@@ -9,8 +9,6 @@ on:
   push:
     tags:
       - 'v*'
-    branches:
-      - 'fase-4-instalador-y-pruebas'   # solo mientras se desarrolla esta fase (se quita al terminar)
 
 permissions:
   contents: read

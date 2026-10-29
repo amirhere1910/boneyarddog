@@ -48,6 +48,8 @@ Decisiones técnicas:
 - **Discos virtuales reales en CI** (NTFS, exFAT y FAT32, con `diskpart`): workflow «Discos virtuales», `npm run smoke:discos`, resultado en el artefacto `discos` (`discos.json`).
 - La versión se ve en el pie de la app, con la dirección del proyecto como texto (la app no usa red).
 
+**Observado en Windows real (CI, 29 de octubre de 2026):** el instalador pesa **108 MB** y el portátil **136 MB** (instalado: unos 311 MB, 55 archivos, sin `test/`, `docs/` ni datos de prueba dentro). Instalación silenciosa (`/S`) en ~13 s; no se crea el acceso del escritorio en silencio (es opcional en la instalación normal) pero sí el del menú Inicio y la entrada de desinstalación. La **app instalada** abrió, hizo las 151 comprobaciones de la prueba automática (escaneo, mapa, asistente, datos de prueba) en ~50 s y se cerró con código 0. La desinstalación silenciosa dejó **solo** `Uninstall BoneYardDog.exe` (con `_?=` el desinstalador no puede borrarse a sí mismo; la prueba lo retira) y quitó el menú Inicio. El portátil se descomprime en una carpeta única y pasa la misma prueba. Cada ejecución de «Construir instalador» deja los archivos en **Actions → la ejecución → Artifacts → `BoneYardDog-<versión>`**.
+
 **Qué falta:** probar con un USB físico real, con desconexiones reales y con la cuota real de la Papelera; firmar el código (cuando haya certificado) para quitar el aviso de SmartScreen; actualizaciones automáticas (hoy se descarga una versión nueva a mano); instalador para otras arquitecturas (ARM64, 32 bits).
 
 ## El mapa (Fase 2C)
