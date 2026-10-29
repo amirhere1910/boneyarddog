@@ -153,3 +153,5 @@ vite.config.ts.timestamp-*
 smoke-artifacts/
 .smoke-data/
 .smoke-discos/
+.smoke-data-ext/
+dist/

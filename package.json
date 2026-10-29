@@ -1,7 +1,7 @@
 {
   "name": "boneyarddog",
   "version": "0.1.0",
-  "description": "Analizador de discos para Windows: encuentra archivos grandes y sin uso, y ayuda a limpiarlos o respaldarlos.",
+  "description": "Analizador de discos para Windows: encuentra carpetas grandes sin uso y las copia o transfiere a otro disco con verificación.",
   "license": "MIT",
   "private": true,
   "engines": {
@@ -12,10 +12,76 @@
     "start": "electron .",
     "smoke": "node scripts/smoke.js",
     "smoke:transfer": "node scripts/smoke-transfer.js",
-    "smoke:discos": "node scripts/smoke-discos.js"
+    "smoke:discos": "node scripts/smoke-discos.js",
+    "icono": "electron scripts/crear-icono.js",
+    "empaquetar": "electron-builder --win nsis --x64 --publish never",
+    "probar:instalador": "node scripts/probar-instalador.js"
   },
   "devDependencies": {
-    "electron": "45.0.0"
+    "electron": "45.0.0",
+    "electron-builder": "26.18.0"
   },
-  "main": "src/main/main.js"
+  "main": "src/main/main.js",
+  "author": {
+    "name": "amirhere1910",
+    "url": "https://github.com/amirhere1910/boneyarddog"
+  },
+  "homepage": "https://github.com/amirhere1910/boneyarddog",
+  "build": {
+    "appId": "com.github.amirhere1910.boneyarddog",
+    "productName": "BoneYardDog",
+    "copyright": "Copyright © BoneYardDog (licencia MIT)",
+    "asar": false,
+    "npmRebuild": false,
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "assets/logo.svg",
+      "assets/icon.ico",
+      "package.json",
+      "!**/*.map",
+      "!**/*.md"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "artifactName": "BoneYardDog-${version}-instalador.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": false,
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": true,
+      "shortcutName": "BoneYardDog",
+      "deleteAppDataOnUninstall": false,
+      "include": "build/installer.nsh",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "artifactName": "BoneYardDog-${version}-instalador.${ext}",
+      "language": "3082",
+      "runAfterFinish": false
+    },
+    "electronLanguages": [
+      "es",
+      "en-US"
+    ],
+    "extraFiles": [
+      {
+        "from": "LICENSE",
+        "to": "LICENSE.txt"
+      }
+    ]
+  }
 }

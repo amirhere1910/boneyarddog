@@ -1,0 +1,116 @@
+name: Construir instalador
+
+# Se ejecuta a mano (botón «Run workflow» en la pestaña Actions) y al empujar una etiqueta v* (por ejemplo v0.2.0).
+# Genera BoneYardDog-<versión>-instalador.exe y BoneYardDog-<versión>-portatil.zip, los prueba EN WINDOWS
+# (instalación silenciosa, la app instalada, desinstalación y el portátil) y calcula sus huellas SHA-256.
+# En una etiqueta v* además publica una Release con los archivos. El código NO está firmado (no hay certificado).
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  construir:
+    name: Construir y probar el instalador (Windows x64)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write   # solo se usa para crear la Release cuando se empuja una etiqueta v*
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Leer la versión
+        shell: pwsh
+        run: |
+          $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Versión: $v"
+          if ($env:GITHUB_REF -like 'refs/tags/v*' -and $env:GITHUB_REF_NAME -ne "v$v") {
+            Write-Error "La etiqueta $($env:GITHUB_REF_NAME) no coincide con la versión de package.json (v$v). Corrige una de las dos."
+            exit 1
+          }
+
+      - name: Pruebas
+        run: npm test
+
+      - name: Construir el instalador
+        run: npx electron-builder --win nsis --x64 --publish never
+
+      - name: Armar el .zip portátil, los nombres y las huellas SHA-256
+        shell: pwsh
+        run: |
+          $v = $env:VERSION
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item "dist\BoneYardDog-$v-instalador.exe" release\
+          $stage = "stage\BoneYardDog-$v-portatil"
+          New-Item -ItemType Directory -Force stage | Out-Null
+          Copy-Item dist\win-unpacked $stage -Recurse
+          @(
+            'BONEYARDDOG (versión portátil)',
+            '',
+            'No hace falta instalar nada: deja esta carpeta donde quieras y abre BoneYardDog.exe.',
+            '',
+            'Aviso de Windows (SmartScreen): como el programa no está firmado, Windows puede decir «Windows protegió su PC».',
+            'Pulsa «Más información» y luego «Ejecutar de todas formas».',
+            '',
+            'Prueba primero con datos de prueba, nunca con datos que no tengas respaldados.',
+            'Dentro del programa: «Ayuda y pruebas» > «Crear datos de prueba».'
+          ) | Set-Content -Path "$stage\LEEME.txt" -Encoding utf8
+          7z a -tzip -mx=5 "release\BoneYardDog-$v-portatil.zip" "$stage" | Select-Object -Last 3
+          Get-ChildItem release | Format-Table Name, Length -AutoSize
+          $lines = Get-ChildItem release -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | ForEach-Object {
+            "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
+          }
+          $lines | Set-Content -Path release\SHA256SUMS.txt -Encoding ascii
+          Get-Content release\SHA256SUMS.txt
+
+      - name: Probar el instalador (silencioso), la app instalada, la desinstalación y el portátil
+        run: node scripts/probar-instalador.js --instalador "release/BoneYardDog-${{ env.VERSION }}-instalador.exe" --portatil "release/BoneYardDog-${{ env.VERSION }}-portatil.zip" --salida smoke-artifacts/instalador
+
+      - name: Guardar el instalador, el portátil y las huellas
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BoneYardDog-${{ env.VERSION }}
+          path: release/
+          if-no-files-found: warn
+
+      - name: Guardar lo observado en las pruebas del instalador
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pruebas-del-instalador
+          path: smoke-artifacts/instalador/
+          if-no-files-found: warn
+
+      - name: Publicar la Release (solo con etiqueta v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = $env:VERSION
+          $notes = @"
+          ## BoneYardDog $v
+
+          - **Instalador:** ``BoneYardDog-$v-instalador.exe`` (se instala solo para tu usuario, no pide administrador).
+          - **Portátil:** ``BoneYardDog-$v-portatil.zip`` (descomprime y abre ``BoneYardDog.exe``).
+          - **Huellas SHA-256:** ``SHA256SUMS.txt``.
+
+          ### Aviso de Windows (SmartScreen)
+          El programa **no está firmado** (no hay certificado de firma de código), así que Windows puede mostrar «Windows protegió su PC». Pulsa **Más información** y luego **Ejecutar de todas formas**. Puedes comprobar que el archivo es el mismo que se construyó aquí comparando su huella SHA-256 con ``SHA256SUMS.txt``.
+
+          **Prueba primero con datos de prueba, nunca con datos que no tengas respaldados.** En el programa: «Ayuda y pruebas» > «Crear datos de prueba».
+          "@
+          gh release create "$env:GITHUB_REF_NAME" release/* --title "BoneYardDog $v" --notes "$notes"

@@ -79,7 +79,8 @@ function write(file, bytes, mtimeDaysAgo, atimeDaysAgo = mtimeDaysAgo) {
  * Con período = 90 días: muy reciente <= 30, reciente <= 90, sin movimiento <= 180, muy antigua > 180.
  */
 function buildFixture(app) {
-  const base = path.join(app.getAppPath(), '.smoke-data');
+  // BYD_SMOKE_DATA existe para la app INSTALADA: así no se escribe nada dentro de la carpeta de instalación.
+  const base = process.env.BYD_SMOKE_DATA || path.join(app.getAppPath(), '.smoke-data');
   fs.mkdirSync(base, { recursive: true });
   const root = fs.mkdtempSync(path.join(base, 'datos-'));
   const dir = (name) => path.join(root, name);
@@ -321,7 +322,7 @@ const READ_ISOLATION = `(async () => {
 
 function run({ app, win, context, service, settings, indexUrl, fixture }) {
   const started = Date.now();
-  const outDir = path.join(app.getAppPath(), 'smoke-artifacts');
+  const outDir = process.env.BYD_SMOKE_OUT || path.join(app.getAppPath(), 'smoke-artifacts');
   fs.mkdirSync(outDir, { recursive: true });
   const report = { ok: false, checks: [], startedAt: new Date(started).toISOString() };
   const settingsFile = path.join(app.getPath('userData'), 'settings.json');

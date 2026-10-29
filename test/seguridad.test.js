@@ -111,7 +111,8 @@ test('package.json: electron fijado a una versión exacta, solo como devDependen
   const pkg = JSON.parse(read('package.json'));
   assert.match(pkg.devDependencies.electron, /^\d+\.\d+\.\d+$/, 'sin ^ ni ~');
   assert.equal(pkg.dependencies, undefined, 'sin dependencias de ejecución');
-  assert.deepEqual(Object.keys(pkg.devDependencies), ['electron']);
+  assert.deepEqual(Object.keys(pkg.devDependencies).sort(), ['electron', 'electron-builder']);
+  assert.match(pkg.devDependencies['electron-builder'], /^\d+\.\d+\.\d+$/, 'electron-builder también con versión exacta');
   assert.equal(pkg.scripts.test, 'node --test');
 });
 
