@@ -446,6 +446,23 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
     await js("document.getElementById('btn-elegir').click()");
     await settled((s) => s.mapa.carpeta === wf.root && s.mapa.celdas.filter((c) => c.tipo === 'folder').length >= 6, 'el mapa de las carpetas del asistente');
 
+    // --- «Volver a escanear»: vuelve a leer lo mismo sin elegir nada otra vez; F5 hace lo mismo; no hay aviso de mapa viejo todavía.
+    {
+      const before = await js(`({ habilitado: !document.getElementById('btn-reescanear').disabled, aviso: !document.getElementById('aviso-desactualizado').hidden, listaHab: !document.getElementById('btn-reescanear-lista').disabled })`);
+      check('volver a escanear: el botón está habilitado con un resultado y no hay aviso de mapa viejo', before.habilitado && before.listaHab && !before.aviso, before);
+      const escaneos0 = Number(await js("document.body.dataset.escaneos || '0'"));
+      await sleep(600);
+      check('volver a escanear: antes de pulsar no hay otro escaneo (no se re-escanea solo)', Number(await js("document.body.dataset.escaneos || '0'")) === escaneos0, escaneos0);
+      await js("document.getElementById('btn-reescanear').click()");
+      for (let i = 0; i < 100 && Number(await js("document.body.dataset.escaneos || '0'")) < escaneos0 + 1; i++) await sleep(100);
+      await settled();
+      check('volver a escanear: el botón vuelve a leer la misma carpeta sin elegir otra vez (contador +1, misma ruta)', Number(await js("document.body.dataset.escaneos || '0'")) === escaneos0 + 1 && (await js("document.getElementById('res-carpeta').textContent")) === wf.root, escaneos0);
+      await js("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'F5', bubbles: true }))");
+      for (let i = 0; i < 100 && Number(await js("document.body.dataset.escaneos || '0'")) < escaneos0 + 2; i++) await sleep(100);
+      await settled();
+      check('volver a escanear: F5 hace lo mismo', Number(await js("document.body.dataset.escaneos || '0'")) === escaneos0 + 2, null);
+    }
+
     const dialogState = () =>
       js(`(() => {
         const d = document.getElementById('dlg-transferir');
@@ -596,6 +613,8 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
       const gone = await js(`(() => { const c = document.querySelector('#mapa .celda[data-ruta=${q(wf.papelera)}]'); return { cuadro: c ? c.dataset.transferida || '0' : 'sin-cuadro', marcadas: document.body.dataset.transferidas || '0' }; })()`);
       // En una ventana pequeña el cuadro puede haberse plegado en «Otras»: entonces solo se comprueba el registro interno.
       check('B transferir: si el original se retiró, queda registrado y su cuadro (si se ve) marcado «ya transferida»; si no, todo sigue normal', originalGone ? gone.marcadas === '1' && (gone.cuadro === '1' || gone.cuadro === 'sin-cuadro') : gone.marcadas === '0' && gone.cuadro !== '1', gone);
+      const aviso = await js(`({ visible: !document.getElementById('aviso-desactualizado').hidden, texto: document.getElementById('aviso-desactualizado-texto').textContent, ahora: !document.getElementById('btn-reescanear-ahora').disabled })`);
+      check('B transferir: tras retirar un original aparece «El mapa quedó desactualizado» + «Volver a escanear ahora» (y no se re-escanea solo); si no se retiró, no aparece', originalGone ? aviso.visible && /desactualizado/.test(aviso.texto) && aviso.ahora : !aviso.visible, aviso);
     }
 
     // ===== (C) La Papelera FALLA (simulado): el original queda; luego borrado definitivo con confirmación =====

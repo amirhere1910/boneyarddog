@@ -114,9 +114,16 @@
           </div>
           <p id="calculando" class="calculando" role="status" hidden>Calculando…</p>
         </div>
-        <button id="btn-nuevo" type="button" class="secundario">Revisar otra unidad o carpeta</button>
+        <div class="fila">
+          <button id="btn-reescanear" type="button" class="secundario" title="Vuelve a leer la misma carpeta o unidad (F5)">Volver a escanear</button>
+          <button id="btn-nuevo" type="button" class="secundario">Elegir otra unidad o carpeta</button>
+        </div>
       </div>
       <p id="estado-accion" class="nota" role="status"></p>
+      <div id="aviso-desactualizado" class="caja caja-aviso" role="status" hidden>
+        <p id="aviso-desactualizado-texto"></p>
+        <button id="btn-reescanear-ahora" type="button">Volver a escanear ahora</button>
+      </div>
 
       <div class="pestanas" role="tablist" aria-label="Vistas">
         <button id="tab-mapa" type="button" role="tab" aria-selected="true" aria-controls="panel-mapa" tabindex="0">Mapa</button>
@@ -170,6 +177,7 @@
       <!-- Pestaña Lista -->
       <div id="panel-lista" role="tabpanel" aria-labelledby="tab-lista" hidden>
         <h2 id="res-titulo" tabindex="-1">–</h2>
+        <div class="fila"><button id="btn-reescanear-lista" type="button" class="secundario">Volver a escanear</button></div>
         <div class="controles">
           <div class="campo">
             <label for="sel-minimo">Tamaño mínimo</label>
@@ -370,6 +378,7 @@
 
   <script src="../shared/activity.js"></script>
   <script src="../shared/treemap.js"></script>
+  <script src="../shared/rescan.js"></script>
   <script src="../shared/transfer-wizard.js"></script>
   <script src="transfer-ui.js"></script>
   <script src="app.js"></script>
