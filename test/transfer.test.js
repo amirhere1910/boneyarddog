@@ -95,7 +95,7 @@ test('copia feliz: anidadas, tildes, ñ, emoji, 0 bytes, 64 MB, carpetas vacías
 
   // Progreso por fases.
   const phases = [...new Set(events.map((e) => e.fase))];
-  assert.deepEqual(phases, ['copiando', 'verificando', 'terminado']);
+  assert.deepEqual(phases, ['preparando', 'copiando', 'verificando', 'terminado']);
   const copying = events.filter((e) => e.fase === 'copiando').map((e) => e.bytesDone);
   assert.ok(copying.every((v, i) => i === 0 || v >= copying[i - 1]), 'el progreso no retrocede');
   const last = events[events.length - 1];
@@ -1586,13 +1586,13 @@ test('REGLA DE ORO (código fuente): las únicas eliminaciones están en las fun
   }
   // permanentlyDelete solo se invoca desde run y eliminarDefinitivamente.
   for (const { l, i } of lines.map((l, i) => ({ l, i }))) {
-    if (/\bawait permanentlyDelete\(/.test(l)) assert.ok(['run', 'eliminarDefinitivamente'].includes(enclosing(i)), `permanentlyDelete llamada desde ${enclosing(i)}`);
+    if (/\bawait permanentlyDelete\(/.test(l)) assert.ok(['runBody', 'eliminarDefinitivamente'].includes(enclosing(i)), `permanentlyDelete llamada desde ${enclosing(i)}`);
   }
 
   // La Papelera: una sola llamada, desde run, después de verificar y de volver a comprobar el origen.
   const trashCalls = lines.map((l, i) => ({ l, i })).filter(({ l }) => /\bawait trashOriginal\(/.test(l));
   assert.equal(trashCalls.length, 1);
-  assert.equal(enclosing(trashCalls[0].i), 'run');
+  assert.equal(enclosing(trashCalls[0].i), 'runBody');
   const dispose = source.indexOf('await trashOriginal(folder.source)');
   assert.ok(source.lastIndexOf('if (changed) {', dispose) > 0);
   assert.ok(source.lastIndexOf("plan.mode === 'move' && result.resultado === 'copiada-verificada' && result.verificada", dispose) > 0);

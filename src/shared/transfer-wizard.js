@@ -235,7 +235,8 @@
   // ----------------------------------------------------------- progreso
 
   const PHASES = {
-    planificando: 'Planificando',
+    preparando: 'Preparando',
+    planificando: 'Preparando',
     copiando: 'Copiando',
     verificando: 'Verificando',
     'retirando original': 'Retirando el original',
@@ -269,6 +270,10 @@
       phase: phaseLabel(e.fase),
       percent: progressPercent(e, verify),
       bytesText: `${formatBytes(e.overallBytesDone)} de ${formatBytes(e.totalBytes)}`,
+      // Textos separados (mismas unidades en todos: 1 GB = 1024 MB, como en el Explorador de Windows).
+      copiedText: `Copiado ${formatBytes(e.copiadoBytes || 0)} de ${formatBytes(e.totalBytes)}`,
+      verifiedText: Number.isFinite(e.totalVerificarBytes) && e.totalVerificarBytes > 0 ? `Verificado ${formatBytes(e.verificadoBytes || 0)} de ${formatBytes(e.totalVerificarBytes)}` : 'Verificación rápida (tamaño y fecha)',
+      stageText: e.etapa ? `Etapa: ${e.etapa}` : '',
       filesText: `${nf(e.overallFilesDone || 0)} de ${nf(e.totalFiles || 0)} archivos`,
       currentFile: file.shown,
       currentFileFull: file.full,
@@ -342,6 +347,7 @@
     const bad = countBy(result, (c) => c.resultado === 'con-errores' || c.resultado === 'borrado-parcial');
     const cancelled = result.estado === 'cancelado' || countBy(result, (c) => c.resultado === 'cancelada') === total;
     const verified = countBy(result, (c) => c.verificada === true);
+    if (result.forzada) return { tone: 'error', text: result.aviso || 'Cancelada a la fuerza porque el disco no respondía. Los originales no se tocaron.' };
     if (result.abortada) return { tone: 'error', text: `La operación se detuvo: ${translateError(result.abortada.message || result.abortada.code)}` };
     if (cancelled) {
       const left = result.carpetas.flatMap((c) => (c.limpieza && !c.limpieza.limpia ? c.limpieza.pendientes : []));

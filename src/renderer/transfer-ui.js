@@ -61,7 +61,9 @@
     $('prog-barra').setAttribute('aria-valuetext', `${pv.phase}, ${pv.percent} %`);
     $('prog-relleno').style.width = `${pv.percent}%`;
     $('prog-porcentaje').textContent = `${pv.percent} %`;
-    $('prog-bytes').textContent = pv.bytesText;
+    $('prog-bytes').textContent = pv.copiedText;
+    $('prog-verificado').textContent = pv.verifiedText;
+    $('prog-etapa').textContent = pv.stageText;
     $('prog-archivos').textContent = pv.filesText;
     $('prog-velocidad').textContent = pv.speedText;
     $('prog-eta').textContent = pv.etaText;

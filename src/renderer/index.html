@@ -65,6 +65,12 @@
           <button id="td-borrar-no" type="button" class="secundario">No</button>
         </div>
       </div>
+      <h2 id="t-diag">Registro de diagnóstico</h2>
+      <p>Si una copia se queda esperando, el registro dice en qué etapa y cuánto tardó cada paso (abrir el archivo, primera lectura, escritura). <strong>Incluye rutas de tus carpetas y archivos</strong>, pero nunca su contenido. Revísalo antes de compartirlo.</p>
+      <div class="fila fila-envuelve">
+        <button id="diag-guardar" type="button" class="secundario">Guardar registro de diagnóstico…</button>
+      </div>
+      <p id="diag-estado" class="nota" role="status"></p>
     </div>
   </details>
 
@@ -285,12 +291,14 @@
         <div id="prog-barra" class="barra barra-real" role="progressbar" aria-label="Progreso total" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="prog-relleno" class="barra-relleno"></div></div>
         <p id="prog-porcentaje" class="nota"></p>
         <dl class="cifras cifras-prog">
-          <div><dt>Bytes</dt><dd id="prog-bytes">–</dd></div>
+          <div><dt>Copiado</dt><dd id="prog-bytes">–</dd></div>
+          <div><dt>Verificado</dt><dd id="prog-verificado">–</dd></div>
           <div><dt>Archivos</dt><dd id="prog-archivos">–</dd></div>
           <div><dt>Velocidad</dt><dd id="prog-velocidad">–</dd></div>
           <div><dt>Tiempo restante</dt><dd id="prog-eta">–</dd></div>
         </dl>
         <p class="nota">Archivo actual:</p>
+        <p id="prog-etapa" class="nota" role="status"></p>
         <p id="prog-archivo" class="ruta ruta-actual"></p>
         <p id="prog-tardando" class="caja caja-aviso prog-tardando" role="status" hidden></p>
         <p id="prog-aviso" class="nota">Si cancelas, los originales no se tocan.</p>

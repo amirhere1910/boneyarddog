@@ -43,6 +43,7 @@ const CHANNELS = Object.freeze({
   copiesRemove: 'byd:copies-remove',
   pendingList: 'byd:pending-list',
   pendingClean: 'byd:pending-clean',
+  diagSave: 'byd:diag-save', // guarda una copia del diagnóstico donde elija la persona (diálogo del sistema; sin rutas desde la interfaz)
   // Datos de prueba (Fase 4): la ruta (Documentos\\BoneYardDog-Prueba) la fija SOLO el proceso principal.
   testDataStatus: 'byd:test-data-status',
   testDataCreate: 'byd:test-data-create',

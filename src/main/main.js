@@ -147,7 +147,8 @@ function createWindow() {
       if (!answer || answer.response !== 1) return;
       context.closeConfirmed = true;
       try {
-        await transferService.cancel();
+        // Cancela con el perro guardián (si el disco no responde, corta el hilo en 10 s). Nunca se fuerza el cierre antes.
+        await transferService.cancelAndWait();
       } catch {
         /* se cierra de todos modos */
       }
@@ -417,6 +418,21 @@ function registerIpc() {
     return transferService.listPending();
   });
 
+  handle(V.CHANNELS.diagSave, async (...args) => {
+    V.validateNoArgs(args);
+    const fsp = require('node:fs').promises;
+    const stamp = new Date().toISOString().slice(0, 10);
+    const chosen = context.diagSaveHook
+      ? await context.diagSaveHook()
+      : await dialog.showSaveDialog(mainWindow, { title: 'Guardar registro de diagnóstico', defaultPath: `BoneYardDog-diagnostico-${stamp}.log`, filters: [{ name: 'Registro', extensions: ['log', 'txt'] }] });
+    if (!chosen || chosen.canceled || !chosen.filePath) return { guardado: false };
+    const parts = [];
+    for (const f of [`${context.diagFile}.1`, context.diagFile]) parts.push(await fsp.readFile(f, 'utf8').catch(() => ''));
+    const text = parts.join('') || 'Todavía no hay registro de diagnóstico (no se ha hecho ninguna copia).\n';
+    await fsp.writeFile(chosen.filePath, text, 'utf8');
+    return { guardado: true };
+  });
+
   handle(V.CHANNELS.pendingClean, async (ruta, ...rest) => {
     V.validateNoArgs(rest);
     V.validateAbsolutePath(ruta);
@@ -507,12 +523,14 @@ async function start() {
   testData = createTestDataService({ documentsDir: () => context.smokeDocuments || app.getPath('documents'), version: app.getVersion() });
   // La Papelera real solo existe aquí (shell.trashItem); el hilo de transferencias se la pide a este proceso.
   const registryDir = path.join(app.getPath('userData'), 'registros');
+  const diagFile = path.join(app.getPath('userData'), 'diagnostico.log');
+  context.diagFile = diagFile;
   const trash = (p) => (context.smokeTrashFails ? Promise.reject(new Error('Simulado por la prueba: Windows rechazó enviar a la Papelera (E_ABORT)')) : shell.trashItem(p));
   transferService = new TransferService(
     SMOKE
       ? // Solo en la prueba automática: carpetas «Removible …» se tratan como discos sin Papelera.
-        { trash, workerFactory: () => new Worker(path.join(__dirname, '..', 'service', 'transfer-worker.js'), { workerData: { hasTrash: true, progressIntervalMs: 100, smokeRemovablePrefix: 'Removible ', smokeSlowPrefix: 'Lenta ', registryDir } }) }
-      : { trash, registryDir },
+        { trash, workerFactory: () => new Worker(path.join(__dirname, '..', 'service', 'transfer-worker.js'), { workerData: { hasTrash: true, progressIntervalMs: 100, smokeRemovablePrefix: 'Removible ', smokeSlowPrefix: 'Lenta ', registryDir, diagFile } }) }
+      : { trash, registryDir, diagFile },
   );
   transferService.on('progress', (progress) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(V.CHANNELS.transferProgress, progress);

@@ -14,6 +14,8 @@ const { spawnSync } = require('node:child_process');
 
 const FILE = path.join(__dirname, '..', 'src', 'core', 'transfer.js');
 const original = fs.readFileSync(FILE, 'utf8');
+const SERVICE_FILE = path.join(__dirname, '..', 'src', 'service', 'transfer-service.js');
+const serviceOriginal = fs.readFileSync(SERVICE_FILE, 'utf8');
 
 function once(find, replace) {
   return (src) => {
@@ -66,8 +68,14 @@ const MUTATIONS = [
   { nombre: '(extra) no avisar ni bloquear la falta de espacio', fn: once('if (info.freeBytes < required) {', 'if (false) {') },
 ];
 
+MUTATIONS.push(
+  { nombre: '(4c) perro guardián: nunca corta el hilo colgado', archivo: SERVICE_FILE, fn: once('active.timer = setTimeout(() => this._forceCancel(active), this._cancelGraceMs);', 'active.timer = setTimeout(() => {}, this._cancelGraceMs);') },
+  { nombre: '(4c) perro guardián: corta el hilo pero no devuelve el resultado', archivo: SERVICE_FILE, fn: once('    if (!entry) return;\n    if (active.method', '    return;\n    if (active.method') },
+  { nombre: '(4c) perro guardián: no avisa de la carpeta provisional exacta', archivo: SERVICE_FILE, fn: once("const aviso = nombres.length", 'const aviso = false') },
+);
+
 function runTests() {
-  const r = spawnSync(process.execPath, ['--test', 'test/transfer.test.js', 'test/transfer-service.test.js', 'test/copia-simple.test.js'], { cwd: path.join(__dirname, '..'), encoding: 'utf8' });
+  const r = spawnSync(process.execPath, ['--test', 'test/transfer.test.js', 'test/transfer-service.test.js', 'test/copia-simple.test.js', 'test/transfer-wizard.test.js'], { cwd: path.join(__dirname, '..'), encoding: 'utf8' });
   const out = `${r.stdout}\n${r.stderr}`;
   const grab = (k) => Number((new RegExp(`^# ${k} (\\d+)`, 'm').exec(out) || [])[1] || 0);
   return { fail: grab('fail'), pass: grab('pass'), status: r.status, firstFailure: (/^not ok \d+ - (.+)$/m.exec(out) || [])[1] || null };
@@ -85,17 +93,20 @@ const selected = filter ? MUTATIONS.filter((m) => m.nombre.includes(filter)) : M
 let survivors = 0;
 try {
   for (const m of selected) {
-    const mutated = m.fn(original);
-    if (mutated === original) throw new Error(`La mutación no cambió nada: ${m.nombre}`);
-    fs.writeFileSync(FILE, mutated);
+    const target = m.archivo || FILE;
+    const base0 = m.archivo ? serviceOriginal : original;
+    const mutated = m.fn(base0);
+    if (mutated === base0) throw new Error(`La mutación no cambió nada: ${m.nombre}`);
+    fs.writeFileSync(target, mutated);
     const res = runTests();
-    fs.writeFileSync(FILE, original);
+    fs.writeFileSync(target, base0);
     const detected = res.fail > 0 || res.status !== 0;
     if (!detected) survivors++;
     console.log(`${detected ? 'DETECTADA ' : 'SOBREVIVIÓ '} ${m.nombre}\n    pruebas que fallaron: ${res.fail}${res.firstFailure ? ` (p. ej. «${res.firstFailure}»)` : ''}`);
   }
 } finally {
   fs.writeFileSync(FILE, original);
+  fs.writeFileSync(SERVICE_FILE, serviceOriginal);
 }
 console.log(`\n${selected.length - survivors} de ${selected.length} mutaciones detectadas.`);
 process.exit(survivors === 0 ? 0 : 1);

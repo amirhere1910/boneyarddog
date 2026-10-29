@@ -29,6 +29,8 @@ const { unknownVolume } = require('./volume');
 const R = require('./transfer-rules');
 
 const CHUNK = 1024 * 1024;
+/** Archivos más pequeños que esto se copian en un solo golpe con copyFile (rápida); los grandes se copian por bloques para informar del avance. */
+const COPYFILE_MAX = 16 * 1024 * 1024;
 const MAX_SOURCES = 500;
 /** Carpeta provisional: «Fotos.copiando» (o «Fotos.copiando (2)» si ya existía). */
 const WORK_RE = /\.copiando(?: \(\d+\))?$/i;
@@ -112,6 +114,15 @@ function createTransferEngine(deps = {}) {
   };
   const env = deps.env || process.env;
   const appVersion = deps.appVersion || '0.0.0'; // eslint-disable-line no-unused-vars
+  const diag = typeof deps.diag === 'function' ? deps.diag : null; // diag(evento, datos): registro de diagnóstico (no incluye contenido de archivos)
+  const dlog = (evento, datos) => {
+    if (!diag) return;
+    try {
+      diag(evento, datos);
+    } catch {
+      /* el diagnóstico nunca rompe una copia */
+    }
+  };
   const registry = deps.registry || null; // { save, update, remove, addPending, removePending }: el registro vive en el PC
 
   /** ¿La ruta real de `p` sigue siendo `p`? (si un enlace o punto de unión la desvió, no). */
@@ -702,7 +713,7 @@ function createTransferEngine(deps = {}) {
    * @param {object} plan
    * @param {{onProgress?: Function, signal?: AbortSignal, progressIntervalMs?: number, hooks?: object}} [opts]
    */
-  async function run(plan, { onProgress, signal, progressIntervalMs = 200, hooks = {} } = {}) {
+  async function runBody(plan, { onProgress, signal, progressIntervalMs = 200, hooks = {} } = {}, hb = { tick: null }) {
     // `hooks` existe SOLO para pruebas (simular que algo cambia en un momento exacto).
     if (!plan || plan.version !== 2 || !Array.isArray(plan.sources) || !['copy', 'move'].includes(plan.mode) || !['full', 'quick'].includes(plan.verify)) {
       throw new Error('Plan no válido: hay que usar el que devuelve preflight()');
@@ -719,8 +730,20 @@ function createTransferEngine(deps = {}) {
     const totalFiles = plan.totals.files;
     let overallBytes = 0;
     let overallFiles = 0;
+    let copiedBytes = 0;
+    let verifiedBytes = 0;
     let lastEmit = 0;
     const speedStart = Date.now();
+    // Latido: etapa actual y desde cuándo no avanzan los bytes (para que la pantalla nunca parezca congelada).
+    let etapa = 'preparando destino';
+    let advancedAt = Date.now();
+    let lastMark = 0;
+    let lastExtra = { fase: 'preparando' };
+    const setEtapa = (name, datos) => {
+      if (etapa !== name) dlog('etapa', { etapa: name, ...datos });
+      etapa = name;
+      emit({}, true);
+    };
 
     const throwIfAborted = () => {
       if (signal && signal.aborted) throw new AbortedError();
@@ -729,21 +752,33 @@ function createTransferEngine(deps = {}) {
     function emit(extra, force) {
       if (!onProgress) return;
       const t = Date.now();
+      if (overallBytes !== lastMark) {
+        lastMark = overallBytes;
+        advancedAt = t;
+      }
       if (!force && t - lastEmit < progressIntervalMs) return;
       lastEmit = t;
+      lastExtra = { ...lastExtra, ...extra };
       const elapsed = Math.max(1, t - speedStart) / 1000;
       const bps = overallBytes / elapsed;
       const remaining = Math.max(0, totalBytes * (plan.mode === 'move' || plan.verify === 'full' ? 2 : 1) - overallBytes);
       onProgress({
+        ...lastExtra,
         bytesPerSecond: Math.round(bps),
         etaSeconds: bps > 0 ? Math.round(remaining / bps) : null,
         overallBytesDone: overallBytes,
         overallFilesDone: overallFiles,
+        copiadoBytes: copiedBytes,
+        verificadoBytes: verifiedBytes,
+        totalVerificarBytes: plan.verify === 'full' ? totalBytes : 0,
         totalBytes,
         totalFiles,
-        ...extra,
+        etapa,
+        sinAvanceSegundos: Math.round(((t - advancedAt) / 1000) * 10) / 10,
+        rssMB: Math.round(process.memoryUsage().rss / 1048576),
       });
     }
+    hb.tick = () => emit({}, true); // el latido: cada segundo, aunque no haya terminado ningún bloque
 
     const journalAdd = async (ruta, origen) => {
       if (registry && registry.addPending) await registry.addPending({ ruta, raiz: destRoot, origen }).catch(() => {});
@@ -769,8 +804,13 @@ function createTransferEngine(deps = {}) {
       }
       let sha = null;
       let destCreated = false;
+      const doHash = plan.verify === 'full';
+      const fileStart = Date.now();
+      let timings = { aperturaOrigenMs: null, aperturaDestinoMs: null, primeraLecturaMs: null, syncMs: null };
       try {
-        if (plan.verify === 'quick') {
+        if (!doHash && entry.size < COPYFILE_MAX) {
+          // Rápida y pequeño: un solo golpe (copyFile no informa del avance, pero dura un instante).
+          setEtapa('copiando', { ruta: srcPath, tamano: entry.size });
           try {
             await fsp.copyFile(srcPath, destPath, fs.constants.COPYFILE_EXCL);
           } catch (err) {
@@ -779,6 +819,7 @@ function createTransferEngine(deps = {}) {
           }
           destCreated = true;
           ctx.created.push({ rel: entry.rel, type: 'file' });
+          setEtapa('guardando en el disco', { ruta: destPath });
           const h = await fsp.open(destPath, 'r+');
           try {
             await h.sync();
@@ -786,29 +827,42 @@ function createTransferEngine(deps = {}) {
             await h.close();
           }
           overallBytes += entry.size;
+          copiedBytes += entry.size;
           ctx.bytes += entry.size;
         } else {
           let src;
           let dst;
           try {
+            setEtapa('abriendo origen', { ruta: srcPath, tamano: entry.size });
+            let t0 = Date.now();
             src = await fsp.open(srcPath, 'r').catch((err) => {
               throw Object.assign(err, { side: 'source' });
             });
+            timings.aperturaOrigenMs = Date.now() - t0; // un antivirus que examina un archivo recién creado se nota aquí o en la primera lectura
+            setEtapa('abriendo destino', { ruta: destPath });
+            t0 = Date.now();
             dst = await fsp.open(destPath, 'wx').catch((err) => {
               throw Object.assign(err, { side: 'dest' });
             });
+            timings.aperturaDestinoMs = Date.now() - t0;
             destCreated = true;
             ctx.created.push({ rel: entry.rel, type: 'file' });
-            const hash = crypto.createHash('sha256');
+            const hash = doHash ? crypto.createHash('sha256') : null;
             const buf = Buffer.allocUnsafe(CHUNK);
             let pos = 0;
+            setEtapa('copiando', { ruta: srcPath });
             for (;;) {
               throwIfAborted();
+              const tr = Date.now();
               const { bytesRead } = await src.read(buf, 0, buf.length, pos).catch((err) => {
                 throw Object.assign(err, { side: 'source' });
               });
+              if (pos === 0) {
+                timings.primeraLecturaMs = Date.now() - tr;
+                dlog('archivo-abierto', { ruta: srcPath, tamano: entry.size, ...timings });
+              }
               if (bytesRead === 0) break;
-              hash.update(buf.subarray(0, bytesRead));
+              if (hash) hash.update(buf.subarray(0, bytesRead));
               let off = 0;
               while (off < bytesRead) {
                 const { bytesWritten } = await dst.write(buf, off, bytesRead - off, null).catch((err) => {
@@ -818,13 +872,17 @@ function createTransferEngine(deps = {}) {
               }
               pos += bytesRead;
               overallBytes += bytesRead;
+              copiedBytes += bytesRead;
               ctx.bytes += bytesRead;
               emit({ fase: 'copiando', carpeta: ctx.origen, carpetaIndice: ctx.index, archivo: srcPath, bytesDone: ctx.bytes, bytesTotal: ctx.totalBytes, filesDone: ctx.files, filesTotal: ctx.totalFiles });
             }
+            setEtapa('guardando en el disco', { ruta: destPath });
+            const ts = Date.now();
             await dst.sync().catch((err) => {
               throw Object.assign(err, { side: 'dest' });
             });
-            sha = hash.digest('hex');
+            timings.syncMs = Date.now() - ts;
+            sha = hash ? hash.digest('hex') : null;
             if (pos !== entry.size) {
               throw Object.assign(new Error('Se leyó un tamaño distinto al esperado'), { code: 'CAMBIO_DURANTE', side: 'source', custom: true });
             }
@@ -846,26 +904,36 @@ function createTransferEngine(deps = {}) {
         } catch (err) {
           throw Object.assign(err, { side: 'dest' });
         }
+        const ms = Date.now() - fileStart;
+        dlog('archivo-copiado', { ruta: srcPath, tamano: entry.size, ms, ...timings, mbPorSeg: ms > 0 ? Math.round((entry.size / 1048576 / (ms / 1000)) * 10) / 10 : null });
         return sha;
       } catch (err) {
+        dlog('archivo-error', { ruta: srcPath, tamano: entry.size, etapa, codigo: err && err.code, lado: err && err.side, mensaje: err && err.message, ...timings });
         if (destCreated) await removeOwn(destPath, ctx.workPath).catch(() => {}); // lo que quedó a medias lo creamos nosotros
         throw err;
       }
     }
 
-    // ---- verificación de un archivo ya copiado
-    async function hashFile(p) {
+    // ---- verificación de un archivo ya copiado (releyéndolo del destino, con avance por bloques)
+    async function hashFile(p, ctx, rel) {
+      const t0 = Date.now();
       const h = await fsp.open(p, 'r');
+      const openMs = Date.now() - t0;
       try {
         const hash = crypto.createHash('sha256');
         const buf = Buffer.allocUnsafe(CHUNK);
         let pos = 0;
         for (;;) {
           throwIfAborted();
+          const tr = Date.now();
           const { bytesRead } = await h.read(buf, 0, buf.length, pos);
+          if (pos === 0) dlog('verificacion-abierta', { ruta: p, aperturaMs: openMs, primeraLecturaMs: Date.now() - tr });
           if (bytesRead === 0) break;
           hash.update(buf.subarray(0, bytesRead));
           pos += bytesRead;
+          overallBytes += bytesRead;
+          verifiedBytes += bytesRead;
+          emit({ fase: 'verificando', carpeta: ctx.origen, carpetaIndice: ctx.index, archivo: p, bytesDone: ctx.bytes, bytesTotal: ctx.totalBytes, filesDone: ctx.files, filesTotal: ctx.totalFiles });
         }
         return { sha: hash.digest('hex'), bytes: pos };
       } finally {
@@ -924,6 +992,7 @@ function createTransferEngine(deps = {}) {
       try {
         throwIfAborted();
         try {
+          setEtapa('creando la carpeta provisional', { ruta: workPath });
           await fsp.mkdir(workPath); // sin recursive: si algo apareció con ese nombre, es un error
         } catch (err) {
           throw Object.assign(err, { side: 'dest' });
@@ -963,6 +1032,7 @@ function createTransferEngine(deps = {}) {
             const c = classify(err, err && err.side);
             if (c.fatal) throw Object.assign(err, { fatalInfo: c });
             addError(e.rel, err);
+            dlog('error-de-archivo', { ruta: e.rel, codigo: err && err.code, mensaje: err && err.message });
             ctx.files++;
             overallFiles++;
           }
@@ -974,6 +1044,7 @@ function createTransferEngine(deps = {}) {
             throwIfAborted();
             const destPath = relToPath(workPath, e.rel);
             const srcRec = archivos.find((a) => a.ruta === e.rel);
+            setEtapa('verificando destino', { ruta: destPath });
             emit({ fase: 'verificando', carpeta: folder.source, carpetaIndice: folder.index, archivo: destPath, bytesDone: ctx.bytes, bytesTotal: ctx.totalBytes, filesDone: ctx.files, filesTotal: ctx.totalFiles });
             try {
               const st = await fsp.lstat(destPath);
@@ -982,8 +1053,7 @@ function createTransferEngine(deps = {}) {
                 continue;
               }
               if (plan.verify === 'full') {
-                const { sha, bytes } = await hashFile(destPath);
-                overallBytes += bytes;
+                const { sha } = await hashFile(destPath, ctx, e.rel);
                 if (sha !== srcRec.sha256) {
                   errores.push({ ruta: e.rel, codigo: 'HUELLA', mensaje: 'La huella SHA-256 del destino no coincide con la del original: la copia está dañada' });
                   continue;
@@ -1015,6 +1085,7 @@ function createTransferEngine(deps = {}) {
           /* idem */
         }
         {
+          setEtapa('comparando la carpeta con lo planificado', { ruta: workPath });
           const live = await walk(workPath, { checkProtected: false });
           const want = new Map(folder.entries.map((e) => [e.rel, e]));
           const failedRels = new Set(errores.map((x) => x.ruta));
@@ -1041,6 +1112,7 @@ function createTransferEngine(deps = {}) {
           throwIfAborted();
           if (hooks.beforeRename) await hooks.beforeRename({ folder, workPath, finalPath }); // solo pruebas
           // ---- TODO copiado y verificado: la carpeta provisional pasa a su nombre final (nunca sobrescribe)
+          setEtapa('cambiando el nombre a la carpeta final', { de: workPath, a: finalPath });
           const outcome = await renameToFinal(workPath, finalPath);
           if (outcome.ok) {
             ctx.renamed = true;
@@ -1101,6 +1173,7 @@ function createTransferEngine(deps = {}) {
       // ---- registro para verificar más tarde (en el PC, no en el destino)
       let originalInfo = { accion: 'sin-tocar', motivo: result.resultado === 'copiada-verificada' ? 'copiar no retira nada' : 'la copia no quedó verificada' };
       if (ctx.renamed && result.verificada && registry && registry.save) {
+        setEtapa('guardando el registro de la copia');
         try {
           result.registroId = await registry.save({
             version: 1,
@@ -1124,6 +1197,7 @@ function createTransferEngine(deps = {}) {
 
       // ---- retirar el original (solo modo "mover", solo tras verificar TODO)
       if (plan.mode === 'move' && result.resultado === 'copiada-verificada' && result.verificada) {
+        setEtapa('retirando el original', { ruta: folder.source });
         emit({ fase: 'retirando original', carpeta: folder.source, carpetaIndice: folder.index, archivo: folder.source, bytesDone: ctx.bytes, bytesTotal: ctx.totalBytes, filesDone: ctx.files, filesTotal: ctx.totalFiles }, true);
         const keep = (motivo, codigo = null) => {
           result.resultado = 'original-sin-tocar';
@@ -1192,6 +1266,24 @@ function createTransferEngine(deps = {}) {
     // Lo que `eliminarDefinitivamente` y `quitarCopiado` necesitan: no se enumera ni sale del motor.
     Object.defineProperty(outcome, '_interno', { value: { plan, ctxs, fsName }, enumerable: false });
     return outcome;
+  }
+
+  /** `run` con latido: cada segundo emite el estado aunque no haya terminado ningún bloque. */
+  async function run(plan, opts = {}) {
+    const hb = { tick: null };
+    const timer = setInterval(() => hb.tick && hb.tick(), 1000);
+    if (timer.unref) timer.unref();
+    dlog('inicio', { modo: plan && plan.mode, verificacion: plan && plan.verify, carpetas: plan && plan.sources ? plan.sources.length : 0, bytes: plan && plan.totals ? plan.totals.bytes : null, destino: plan && plan.destinationRoot, formato: plan && plan.fileSystem });
+    try {
+      const out = await runBody(plan, opts, hb);
+      dlog('fin', { estado: out.estado, abortada: out.abortada, carpetas: out.carpetas.map((c) => [c.nombreFinal, c.resultado]) });
+      return out;
+    } catch (err) {
+      dlog('fallo', { mensaje: err && err.message, codigo: err && err.code });
+      throw err;
+    } finally {
+      clearInterval(timer);
+    }
   }
 
   /**

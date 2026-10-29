@@ -18,6 +18,7 @@ const { parentPort, workerData } = require('node:worker_threads');
 const { createTransferEngine } = require('../core/transfer');
 const { volumeInfoForPath } = require('../main/volume-info');
 const { createRegistry } = require('../core/registro');
+const { createDiagnostic } = require('../core/diagnostico');
 
 const hasTrash = Boolean(workerData && workerData.hasTrash);
 // Solo la prueba automática lo pasa: las carpetas cuyo nombre empieza así se tratan como si estuvieran en un disco extraíble
@@ -46,8 +47,31 @@ function askMainToTrash(p) {
 // El registro (datos para verificar copias más tarde) vive en el PC: este hilo es su ÚNICO escritor.
 const registry = workerData && typeof workerData.registryDir === 'string' && workerData.registryDir !== '' ? createRegistry({ dir: workerData.registryDir }) : null;
 
+// Diagnóstico: tiempos y etapas (nunca el contenido de los archivos). Solo este hilo escribe el archivo.
+const diagnostic = workerData && typeof workerData.diagFile === 'string' && workerData.diagFile !== '' ? createDiagnostic({ file: workerData.diagFile }) : null;
+
+// Solo las pruebas automáticas: un disco que se cuelga al leer o al escribir (los datos nunca llegan ni fallan).
+const testHangFs = workerData && (workerData.testHangFs === 'read' || workerData.testHangFs === 'write') ? workerData.testHangFs : null;
+function hangingFs() {
+  const real = require('node:fs');
+  const never = () => new Promise(() => {});
+  return {
+    ...real,
+    promises: {
+      ...real.promises,
+      open: async (...a) => {
+        const h = await real.promises.open(...a);
+        if (String(a[0]).includes('.byd-sonda-')) return h; // la sonda de la revisión previa funciona; se cuelga la copia
+        return new Proxy(h, { get: (t, k) => (k === testHangFs ? never : typeof t[k] === 'function' ? t[k].bind(t) : t[k]) });
+      },
+    },
+  };
+}
+
 const engine = createTransferEngine({
   registry,
+  diag: diagnostic ? (evento, datos) => diagnostic.log(evento, datos) : null,
+  ...(testHangFs ? { fs: hangingFs() } : {}),
   volumeInfo: async (p) => {
     const info = await volumeInfoForPath(p);
     if (smokeRemovablePrefix && require('node:path').basename(String(p)).startsWith(smokeRemovablePrefix)) return { ...info, driveType: 'removable' };
@@ -158,6 +182,7 @@ const handlers = {
       return summarizeRun(result, runId);
     } finally {
       running = null;
+      if (diagnostic) await diagnostic.flush().catch(() => {}); // que el registro esté en disco cuando la interfaz ve el resultado
     }
   },
 

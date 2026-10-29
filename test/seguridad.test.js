@@ -133,7 +133,7 @@ const EXPECTED_API = [
   'chooseFolder', 'startScan', 'cancelScan', 'getSettings', 'saveSettings', 'getStaleFolders', 'excludePath', 'includePath', 'listDrives', 'chooseDrive',
   'revealInExplorer', 'getTreemap', 'getDetails', 'summarizeSelection', 'onProgress',
   'chooseDestination', 'chooseDestinationDrive', 'listDestinationDrives', 'transferPreflight', 'transferRun', 'transferCancel',
-  'transferDeleteFromResult', 'transferRemoveCopy', 'copiesList', 'copiesVerify', 'copiesRemove', 'pendingList', 'pendingClean', 'onTransferProgress',
+  'transferDeleteFromResult', 'transferRemoveCopy', 'copiesList', 'copiesVerify', 'copiesRemove', 'pendingList', 'pendingClean', 'diagSave', 'onTransferProgress',
   'testDataStatus', 'testDataCreate', 'testDataCancel', 'testDataDelete', 'testDataUse', 'getAppInfo', 'onTestDataProgress',
 ].sort();
 
@@ -144,7 +144,7 @@ test('el preload expone SOLO las funciones previstas, y ninguna acepta una ruta 
   // Las funciones de copiar y transferir: sus parámetros son opciones, identificadores o una letra, nunca un destino.
   for (const m of body.matchAll(/^  (\w+): \(([^)]*)\) =>/gm)) {
     const [, name, params] = m;
-    if (!/^(choose(Destination|DestinationDrive)|listDestinationDrives|transfer\w+|copies\w+|pendingList|testData\w+)$/.test(name)) continue;
+    if (!/^(choose(Destination|DestinationDrive)|listDestinationDrives|transfer\w+|copies\w+|pendingList|diagSave|testData\w+)$/.test(name)) continue;
     assert.doesNotMatch(params, /dest|destino|target|path|ruta|folder|carpeta|dir/i, `${name}(${params}) no puede recibir una ruta`);
   }
   assert.match(preload, /chooseDestination: \(\) =>/);
@@ -185,7 +185,7 @@ test('transferir: ejecutar solo recibe un planId validado; el borrado definitivo
 test('la Papelera real (shell.trashItem) está en un solo lugar del principal y se inyecta al servicio', () => {
   assert.equal((main.match(/shell\.trashItem\(/g) || []).length, 1);
   assert.match(main, /const trash = \(p\) => \(context\.smokeTrashFails \? Promise\.reject\(.*\) : shell\.trashItem\(p\)\);/);
-  assert.match(main, /: \{ trash, registryDir \},\s*\);/, 'fuera de la prueba automática solo se inyecta la Papelera real y la carpeta del registro');
+  assert.match(main, /: \{ trash, registryDir, diagFile \},\s*\);/, 'fuera de la prueba automática solo se inyecta la Papelera real, la carpeta del registro y el archivo de diagnóstico');
   assert.equal((main.match(/smokeTrashFails/g) || []).length, 2, 'el fallo simulado solo se declara y se usa en un lugar');
   assert.equal((main.match(/smokeRemovablePrefix/g) || []).length, 1);
   assert.match(main, /SMOKE\s*\?[^:]*\n?[\s\S]*?smokeRemovablePrefix/);

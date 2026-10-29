@@ -275,3 +275,91 @@ test('servicio: transferencia con borrado definitivo explícito (confirmPermanen
   assert.deepEqual(trashed, []);
   assert.equal(fs.existsSync(src), false);
 });
+
+// ---------------------------------------------------------------- perro guardián (disco que se cuelga)
+
+for (const lado of ['read', 'write']) {
+  test(`perro guardián: si el disco se cuelga al ${lado === 'read' ? 'leer' : 'escribir'}, cancelar corta el hilo, avisa y no toca el original`, { timeout: 15000 }, async (t) => {
+    const base = tmpDir(t);
+    const src = makeSource(base);
+    const dest = makeDest(base);
+    const before = snapshot(src);
+    const { svc } = newService(t, { cancelGraceMs: 400, workerData: { testHangFs: lado } });
+    const pf = await svc.preflight({ sources: [src], destinationRoot: dest, mode: 'copy', verify: 'full' });
+    assert.deepEqual(pf.blockers, []);
+    let forced = null;
+    svc.on('forced-cancel', (e) => (forced = e));
+    const running = svc.run(pf.planId);
+    await new Promise((r) => setTimeout(r, 500)); // ya está colgado dentro del disco
+    const t0 = Date.now();
+    await svc.cancel();
+    const res = await running;
+    assert.ok(Date.now() - t0 < 5000, 'no espera indefinidamente');
+    assert.equal(res.forzada, true);
+    assert.equal(res.estado, 'cancelada');
+    assert.match(res.aviso, /Cancelada a la fuerza/);
+    assert.match(res.aviso, /\.copiando/, 'nombra la carpeta provisional exacta');
+    assert.ok(forced && forced.pendientes.length === 1);
+    assert.deepEqual(snapshot(src), before, 'el original queda intacto');
+    assert.equal(fs.existsSync(forced.pendientes[0]), true, 'el servicio no borra a ciegas: la carpeta queda para limpiarla después');
+
+    // El hilo nuevo funciona: lista lo pendiente y puede limpiarlo (solo lo anotado en el diario).
+    const pend = await svc.listPending();
+    assert.equal(pend.length, 1);
+    await svc.cleanPending(pend[0].ruta);
+    assert.equal(fs.existsSync(pend[0].ruta), false);
+    assert.deepEqual(await svc.listPending(), []);
+  });
+}
+
+test('perro guardián: si el hilo termina de cancelar a tiempo, no se corta nada', async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const dest = makeDest(base);
+  const { svc } = newService(t, { cancelGraceMs: 3000 });
+  let forced = false;
+  svc.on('forced-cancel', () => (forced = true));
+  const pf = await svc.preflight({ sources: [src], destinationRoot: dest, mode: 'copy', verify: 'full' });
+  const running = svc.run(pf.planId);
+  await svc.cancel();
+  const res = await running;
+  assert.notEqual(res.forzada, true);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(forced, false);
+});
+
+test('cancelAndWait: con el disco colgado espera como mucho el perro guardián', { timeout: 15000 }, async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const dest = makeDest(base);
+  const { svc } = newService(t, { cancelGraceMs: 300, workerData: { testHangFs: 'read' } });
+  const pf = await svc.preflight({ sources: [src], destinationRoot: dest, mode: 'copy', verify: 'full' });
+  const running = svc.run(pf.planId);
+  await new Promise((r) => setTimeout(r, 400));
+  const t0 = Date.now();
+  await svc.cancelAndWait();
+  assert.ok(Date.now() - t0 < 5000);
+  assert.equal((await running).forzada, true);
+  assert.deepEqual(await svc.cancelAndWait(), { cancelled: false });
+});
+
+test('diagnóstico: queda el tiempo de abrir el origen y de la primera lectura, con rutas pero sin contenido', async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const dest = makeDest(base);
+  const diagFile = path.join(tmpDir(t, 'diag-'), 'diagnostico.log');
+  const { svc } = newService(t, { diagFile });
+  const pf = await svc.preflight({ sources: [src], destinationRoot: dest, mode: 'copy', verify: 'full' });
+  await svc.run(pf.planId);
+  await svc.close();
+  await new Promise((r) => setTimeout(r, 300));
+  const text = fs.readFileSync(diagFile, 'utf8');
+  assert.match(text, /archivo-copiado/);
+  assert.match(text, /aperturaOrigenMs/);
+  assert.match(text, /primeraLecturaMs/);
+  assert.match(text, /verificacion-abierta/);
+  assert.match(text, /"evento":"inicio"|inicio/);
+  assert.match(text, /fin/);
+  const contents = fs.readdirSync(src, { recursive: true }).filter((n) => fs.statSync(path.join(src, n)).isFile()).map((n) => fs.readFileSync(path.join(src, n), 'utf8')).filter((c) => c.length > 8);
+  for (const c of contents) assert.equal(text.includes(c), false, 'el contenido de los archivos no va al registro');
+});

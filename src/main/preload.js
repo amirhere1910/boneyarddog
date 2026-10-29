@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld('byd', {
   copiesRemove: (id) => ipcRenderer.invoke('byd:copies-remove', id),
   pendingList: () => ipcRenderer.invoke('byd:pending-list'),
   pendingClean: (ruta) => ipcRenderer.invoke('byd:pending-clean', ruta),
+  diagSave: () => ipcRenderer.invoke('byd:diag-save'),
   // Datos de prueba: ninguna función recibe una ruta (la carpeta es fija y la conoce el proceso principal).
   testDataStatus: () => ipcRenderer.invoke('byd:test-data-status'),
   testDataCreate: () => ipcRenderer.invoke('byd:test-data-create'),

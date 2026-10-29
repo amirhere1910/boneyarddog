@@ -446,3 +446,23 @@ test('aviso de «tardando» a los 15 s sin avance de bytes, con la etapa y los s
   s = W.reduce(s, { type: 'progress', event: { fase: 'copiando', etapa: 'copiando', sinAvanceSegundos: 0, overallBytesDone: 5, totalBytes: 100 } });
   assert.equal(W.wizardView(s).stalledNotice, '', 'al volver a avanzar, el aviso desaparece');
 });
+
+test('progreso: textos separados «Copiado X de Y» / «Verificado X de Y» y etapa; la rápida no finge verificar', () => {
+  const W = require('../src/shared/transfer-wizard');
+  const GB = 1024 ** 3;
+  const v = W.progressView({ fase: 'verificando', copiadoBytes: 5.8 * GB, verificadoBytes: 1.4 * GB, totalVerificarBytes: 5.8 * GB, totalBytes: 5.8 * GB, etapa: 'verificando destino' }, 'full');
+  assert.match(v.copiedText, /^Copiado 5,8 GB de 5,8 GB$/);
+  assert.match(v.verifiedText, /^Verificado 1,4 GB de 5,8 GB$/);
+  assert.equal(v.stageText, 'Etapa: verificando destino');
+  const q = W.progressView({ fase: 'copiando', copiadoBytes: 10, totalVerificarBytes: 0, totalBytes: 100 }, 'quick');
+  assert.match(q.verifiedText, /rápida/);
+});
+
+test('resultado forzado por el perro guardián: titular con el aviso exacto, sin botones de copia', () => {
+  const W = require('../src/shared/transfer-wizard');
+  const r = { estado: 'cancelada', abortada: true, forzada: true, aviso: 'Cancelada a la fuerza porque el disco no respondía. Puede quedar la carpeta «E:\\x.copiando».', carpetas: [] };
+  const h = W.resultHeadline(r);
+  assert.equal(h.tone, 'error');
+  assert.match(h.text, /Cancelada a la fuerza/);
+  assert.match(h.text, /x\.copiando/);
+});

@@ -35,6 +35,7 @@ const BRIDGE_KEYS = [
   'copiesRemove',
   'copiesVerify',
   'pendingClean',
+  'diagSave',
   'pendingList',
   'getAppInfo',
   'onTestDataProgress',
