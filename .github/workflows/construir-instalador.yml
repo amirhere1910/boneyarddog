@@ -69,7 +69,11 @@ jobs:
             'Prueba primero con datos de prueba, nunca con datos que no tengas respaldados.',
             'Dentro del programa: «Ayuda y pruebas» > «Crear datos de prueba».'
           ) | Set-Content -Path "$stage\LEEME.txt" -Encoding utf8
-          7z a -tzip -mx=5 "release\BoneYardDog-$v-portatil.zip" "$stage" | Select-Object -Last 3
+          # Se comprime desde dentro de «stage» para que la UNICA carpeta de la raíz del zip sea BoneYardDog-<versión>-portatil.
+          $zip = Join-Path (Get-Location) "release\BoneYardDog-$v-portatil.zip"
+          Push-Location stage
+          7z a -tzip -mx=5 "$zip" "BoneYardDog-$v-portatil" | Select-Object -Last 3
+          Pop-Location
           Get-ChildItem release | Format-Table Name, Length -AutoSize
           $lines = Get-ChildItem release -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | ForEach-Object {
             "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
