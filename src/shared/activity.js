@@ -30,11 +30,11 @@
 
   // Fondo y texto por estado. Todos los pares cumplen contraste WCAG >= 4.5 (hay una prueba).
   const PALETTE = {
-    'muy-reciente': { bg: '#F28C28', fg: '#1F1300' },
-    reciente: { bg: '#FFD54A', fg: '#1F1300' },
+    'muy-reciente': { bg: '#F4A261', fg: '#241200' },
+    reciente: { bg: '#F6DC74', fg: '#241B00' },
     'sin-movimiento': { bg: '#3F6FD8', fg: '#FFFFFF' },
     'muy-antigua': { bg: '#5F6B85', fg: '#FFFFFF' },
-    desconocido: { bg: '#D9D9D9', fg: '#1F1F1F' },
+    desconocido: { bg: '#E3E7EE', fg: '#1F2937' },
   };
 
   /**

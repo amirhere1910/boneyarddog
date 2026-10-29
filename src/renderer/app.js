@@ -109,6 +109,8 @@
     $('vista-inicio').hidden = estado === 'escaneando' || estado === 'resultado';
     $('vista-escaneo').hidden = estado !== 'escaneando';
     $('vista-resultado').hidden = estado !== 'resultado';
+    $('cabecera-escaneo').hidden = estado !== 'resultado';
+    for (const t of TABS) $(`tab-${t}`).disabled = estado !== 'resultado'; // Mapa y Lista solo existen con un resultado
     if (estado !== 'resultado') {
       closeMenu(false);
       closeDetails(false);
@@ -140,8 +142,8 @@
   function onTabKey(e) {
     const i = TABS.indexOf(state.tab);
     let next = null;
-    if (e.key === 'ArrowRight') next = TABS[(i + 1) % TABS.length];
-    else if (e.key === 'ArrowLeft') next = TABS[(i + TABS.length - 1) % TABS.length];
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = TABS[(i + 1) % TABS.length];
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = TABS[(i + TABS.length - 1) % TABS.length];
     else if (e.key === 'Home') next = TABS[0];
     else if (e.key === 'End') next = TABS[TABS.length - 1];
     if (next) {
@@ -1169,6 +1171,12 @@
     rescan();
   });
   new MutationObserver(updateRescan).observe(document.body, { attributes: true, attributeFilter: ['data-estado', 'data-transferidas'] });
+  $('nav-ayuda').addEventListener('click', () => {
+    const d = $('ayuda-pruebas');
+    d.open = true;
+    d.scrollIntoView({ block: 'start' });
+    d.querySelector('summary').focus();
+  });
   $('btn-nuevo').addEventListener('click', async () => {
     showMessage('');
     setState('inicio');

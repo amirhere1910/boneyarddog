@@ -1206,6 +1206,8 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
       await js("document.querySelectorAll('#lista .chk-sel').forEach((c) => c.click())");
       const full = await waitFor((s) => s.seleccion.visible && s.seleccion.cantidad === 500 && s.seleccion.bytes === 500 * 1000, 'las 500 marcadas');
       check('500 carpetas marcadas: la barra suma 500 × 1000 bytes', full.seleccion.cantidad === 500 && full.seleccion.bytes === 500000, full.seleccion);
+      win.setSize(1400, 1000); // con la barra lateral el mapa es más angosto: ventana grande para que Reciente1 conserve su cuadro
+      await sleep(400);
       await js("document.getElementById('tab-mapa').click()");
       await settled((s) => s.pestana === 'mapa', 'volver al mapa');
       await clickCell(path.join(manyRoot, 'Reciente1'), { modifiers: ['control'] });

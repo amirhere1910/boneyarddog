@@ -148,6 +148,7 @@
     const info = await byd.getAppInfo();
     if (info.ok) {
       $('app-version').textContent = `BoneYardDog versión ${info.value.version}`;
+      $('lateral-version').textContent = `Versión ${info.value.version}`;
       $('app-proyecto').textContent = `Proyecto: ${info.value.project}`;
       document.body.dataset.version = info.value.version;
     }

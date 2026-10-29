@@ -199,8 +199,32 @@
       radio.dataset.unidad = d.letter;
       const free = d.freeBytes === null ? 'espacio libre desconocido' : `${W.formatBytes(d.freeBytes)} libres de ${W.formatBytes(d.sizeBytes)}`;
       const text = el('span', 'opcion-texto');
-      text.append(el('strong', '', `${d.letter}:`), el('span', 'nota', `${driveTypeText(d.driveType)} · ${d.fileSystem} · ${free}`));
-      label.append(radio, text);
+      const head = el('span', 'unidad-cab');
+      head.append(el('strong', '', `${d.letter}:`), el('span', 'insignia', d.fileSystem));
+      text.append(head, el('span', 'nota', `${driveTypeText(d.driveType)} · ${free}`));
+      if (Number.isFinite(d.freeBytes) && Number.isFinite(d.sizeBytes) && d.sizeBytes > 0) {
+        const bar = el('span', 'barra-libre');
+        bar.setAttribute('aria-hidden', 'true');
+        const fill = el('span', 'barra-libre-relleno');
+        fill.style.width = `${Math.max(0, Math.min(100, Math.round(((d.sizeBytes - d.freeBytes) / d.sizeBytes) * 100)))}%`; // ocupado
+        bar.append(fill);
+        text.append(bar);
+      }
+      const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      icon.setAttribute('class', 'icono icono-unidad');
+      icon.setAttribute('viewBox', '0 0 24 24');
+      icon.setAttribute('width', '28');
+      icon.setAttribute('height', '28');
+      icon.setAttribute('aria-hidden', 'true');
+      icon.setAttribute('fill', 'none');
+      icon.setAttribute('stroke', 'currentColor');
+      icon.setAttribute('stroke-width', '1.6');
+      icon.setAttribute('stroke-linecap', 'round');
+      icon.setAttribute('stroke-linejoin', 'round');
+      const shape = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      shape.setAttribute('d', d.driveType === 'removable' ? 'M9 3h6v5H9zM8 8h8v13H8zM11 12h2' : 'M3 7h18v10H3zM7 12h.01M11 12h6');
+      icon.append(shape);
+      label.append(icon, radio, text);
       radio.addEventListener('change', () => chooseDrive(d.letter));
       if (ui.destination && ui.destination.letter === d.letter && ui.destination.path === `${d.letter}:\\`) radio.checked = true;
       box.append(label);
@@ -245,12 +269,16 @@
     const note = $('dlg-nota-formato');
     if (!d) {
       out.textContent = 'Todavía no elegiste un destino.';
+      $('dlg-se-guardara').textContent = '';
       delete out.dataset.ruta;
       note.hidden = true;
     } else {
       const free = d.freeBytes === null ? 'espacio libre desconocido' : `${W.formatBytes(d.freeBytes)} libres`;
       out.textContent = `Destino elegido: ${d.path} (${driveTypeText(d.driveType)}, ${d.fileSystem}, ${free})`;
       out.dataset.ruta = d.path;
+      const names = ui.items.map((i) => String(i.path).split(/[\\/]/).filter(Boolean).pop());
+      const base = d.path.replace(/[\\/]+$/, '');
+      $('dlg-se-guardara').textContent = names.length === 1 ? `Se guardará en: ${base}\\${names[0]}` : `Se guardará en: ${base}\\ (una carpeta por cada origen: ${names.slice(0, 3).join(', ')}${names.length > 3 ? '…' : ''})`;
       const notes = [];
       if (d.fileSystem === 'FAT32') notes.push('FAT32 no admite archivos de 4 GB o más. Si hay alguno, la revisión te lo dirá.');
       else if (d.fileSystem === 'desconocido' || d.fileSystem === 'otro') notes.push('No se pudo saber el formato de este disco; se aplicarán reglas cautelosas.');

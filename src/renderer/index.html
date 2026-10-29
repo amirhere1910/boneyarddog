@@ -8,13 +8,36 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body data-estado="inicio">
+  <div class="app">
+  <aside class="lateral" aria-label="Navegación">
+    <div class="marca">
+      <img src="../../assets/logo.svg" alt="" width="36" height="36">
+      <span class="marca-nombre">BoneYardDog</span>
+    </div>
+    <nav class="lateral-nav" aria-label="Secciones">
+      <div class="pestanas" role="tablist" aria-label="Vistas" aria-orientation="vertical">
+        <button id="tab-mapa" type="button" role="tab" aria-selected="true" aria-controls="panel-mapa" tabindex="0"><svg class="icono" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="10" rx="1.5"/><rect x="13" y="3" width="8" height="6" rx="1.5"/><rect x="13" y="11" width="8" height="10" rx="1.5"/><rect x="3" y="15" width="8" height="6" rx="1.5"/></svg><span class="nav-texto">Mapa</span></button>
+        <button id="tab-lista" type="button" role="tab" aria-selected="false" aria-controls="panel-lista" tabindex="-1"><svg class="icono" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg><span class="nav-texto">Lista de candidatas</span></button>
+      </div>
+      <button id="btn-verificar-copia" type="button" class="nav-boton"><svg class="icono" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg><span class="nav-texto">Copias anteriores</span></button>
+      <button id="nav-ayuda" type="button" class="nav-boton"><svg class="icono" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7"/><path d="M12 17h.01"/></svg><span class="nav-texto">Ayuda y pruebas</span></button>
+    </nav>
+    <p id="lateral-version" class="lateral-version"></p>
+  </aside>
+
+  <div class="contenido">
   <header class="cabecera">
-    <img src="../../assets/logo.svg" alt="" width="56" height="56">
-    <div>
+    <div class="cabecera-titulo">
       <h1>BoneYardDog</h1>
       <p class="subtitulo">Encuentra carpetas grandes que llevan tiempo sin usarse.</p>
     </div>
-    <button id="btn-verificar-copia" type="button" class="secundario cabecera-boton">Copias anteriores…</button>
+    <div id="cabecera-escaneo" class="cabecera-escaneo" hidden>
+      <p id="res-carpeta" class="ruta cabecera-ruta"></p>
+      <div class="fila fila-envuelve">
+        <button id="btn-reescanear" type="button" class="secundario" title="Vuelve a leer la misma carpeta o unidad (F5)"><svg class="icono" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg>Volver a escanear</button>
+        <button id="btn-nuevo" type="button" class="secundario">Elegir otra unidad o carpeta</button>
+      </div>
+    </div>
   </header>
 
   <p class="aviso" role="note">Prueba primero con datos de prueba, nunca con datos que no tengas respaldados.</p>
@@ -87,7 +110,6 @@
   <div id="vista-resultado" hidden>
     <section class="panel" aria-label="Resultado del análisis">
       <div class="fila fila-entre fila-superior">
-        <p id="res-carpeta" class="ruta"></p>
         <div class="controles">
           <div class="campo">
             <label for="sel-periodo">Sin uso desde hace</label>
@@ -114,20 +136,11 @@
           </div>
           <p id="calculando" class="calculando" role="status" hidden>Calculando…</p>
         </div>
-        <div class="fila">
-          <button id="btn-reescanear" type="button" class="secundario" title="Vuelve a leer la misma carpeta o unidad (F5)">Volver a escanear</button>
-          <button id="btn-nuevo" type="button" class="secundario">Elegir otra unidad o carpeta</button>
-        </div>
       </div>
       <p id="estado-accion" class="nota" role="status"></p>
       <div id="aviso-desactualizado" class="caja caja-aviso" role="status" hidden>
         <p id="aviso-desactualizado-texto"></p>
         <button id="btn-reescanear-ahora" type="button">Volver a escanear ahora</button>
-      </div>
-
-      <div class="pestanas" role="tablist" aria-label="Vistas">
-        <button id="tab-mapa" type="button" role="tab" aria-selected="true" aria-controls="panel-mapa" tabindex="0">Mapa</button>
-        <button id="tab-lista" type="button" role="tab" aria-selected="false" aria-controls="panel-lista" tabindex="-1">Lista de candidatas</button>
       </div>
 
       <!-- Pestaña Mapa -->
@@ -239,6 +252,9 @@
   </div>
 
   <footer class="pie-app"><span id="app-version">BoneYardDog</span> · <span id="app-proyecto"></span></footer>
+  </div><!-- /contenido -->
+  </div><!-- /app -->
+
 
   <!-- Asistente de copiar y transferir (diálogo propio, no window.confirm) -->
   <dialog id="dlg-transferir" class="dialogo" aria-labelledby="dlg-titulo">
@@ -259,6 +275,7 @@
           <div id="dlg-unidades" class="unidades-lista" role="radiogroup" aria-label="Unidades de destino"></div>
           <div class="fila"><button id="dlg-otra-carpeta" type="button" class="secundario">Elegir otra carpeta…</button></div>
           <p id="dlg-destino-elegido" class="destino-elegido" role="status">Todavía no elegiste un destino.</p>
+          <p id="dlg-se-guardara" class="se-guardara" role="status"></p>
           <p id="dlg-nota-formato" class="nota" hidden></p>
         </fieldset>
         <fieldset class="grupo" id="dlg-verificacion">
