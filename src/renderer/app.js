@@ -9,6 +9,7 @@
   const byd = window.byd;
   const { activityState, PALETTE, LABELS, STATES } = window.BYDActivity;
   const { layoutFolded } = window.BYDTreemap;
+  const TUI = window.BYDTransferUI;
   const $ = (id) => document.getElementById(id);
   const nf = new Intl.NumberFormat('es');
 
@@ -23,6 +24,7 @@
     selToken: 0,
     menu: { open: false, returnTo: null },
     details: { open: false, path: null, returnTo: null, token: 0 },
+    transferred: new Set(), // carpetas cuyo original ya se retiró (Papelera o borrado): desaparecen de las vistas
   };
 
   // ---------------------------------------------------------------- formato
@@ -250,7 +252,7 @@
     $('res-titulo').dataset.bytes = String(result.totalBytes);
 
     const list = $('lista');
-    list.replaceChildren(...result.items.map(renderItem));
+    list.replaceChildren(...result.items.filter((i) => !state.transferred.has(i.path)).map(renderItem));
     $('vacio').hidden = result.items.length > 0;
     $('vacio-creacion').hidden = !(result.items.length === 0 && state.settings && state.settings.useCreationTime);
     if (result.truncated) {
@@ -372,11 +374,48 @@
     }
   }
 
+  // ------------------------------------------------- copiar y transferir (Fase 3B)
+
+  /** Qué carpetas lleva el asistente: toda la selección si incluye la del clic; si no, solo la del clic. */
+  function startTransfer(mode, c) {
+    let items;
+    if (c && state.selection.has(c.path)) items = [...state.selection].map(([path, name]) => ({ path, name }));
+    else if (c) items = [{ path: c.path, name: c.name }];
+    else items = [...state.selection].map(([path, name]) => ({ path, name }));
+    items = items.filter((i) => !state.transferred.has(i.path));
+    if (items.length === 0) return;
+    if (items.length > 500) items = items.slice(0, 500);
+    const total = c && !state.selection.has(c.path) && Number.isFinite(c.size) ? c.size : null;
+    TUI.openWizard(mode, items, total);
+  }
+
+  /** Tras retirar originales: se quitan de la selección, de la lista y del mapa (marcadas), sin volver a escanear. */
+  function onOriginalsRemoved(paths) {
+    if (!paths || paths.length === 0) return;
+    for (const p of paths) {
+      state.transferred.add(p);
+      state.selection.delete(p);
+    }
+    document.body.dataset.transferidas = String(state.transferred.size);
+    setActionNote(`Se retiró el original de ${plural(paths.length, 'carpeta', 'carpetas')}. Los tamaños del mapa y de la lista se actualizan al volver a escanear.`);
+    refresh();
+    lastRender = null;
+    renderMap();
+    refreshSelectionMarks();
+    updateBar();
+  }
+
+  TUI.setHooks({ onRemoved: onOriginalsRemoved, onClosed: () => { const t = document.querySelector('#barra-seleccion:not([hidden]) #btn-sel-copiar') || $('btn-verificar-copia'); if (t) t.focus(); } });
+  $('btn-sel-copiar').addEventListener('click', () => startTransfer('copy', null));
+  $('btn-sel-transferir').addEventListener('click', () => startTransfer('move', null));
+  $('btn-verificar-copia').addEventListener('click', () => TUI.openVerify());
+
   // ---------------------------------------------------------------- selección
 
   const MAX_SELECTION = 500;
 
   function setSelected(p, name, on) {
+    if (on && state.transferred.has(p)) return;
     if (on && !state.selection.has(p) && state.selection.size >= MAX_SELECTION) {
       // Sin perder lo ya marcado: solo se rechaza la que sobra.
       const msg = `Máximo ${MAX_SELECTION} carpetas por operación. Quita alguna para agregar otra.`;
@@ -508,6 +547,7 @@
     if (c.unreadable) parts.push('contiene partes que no se pudieron leer');
     if (c.hasLinks) parts.push('contiene enlaces');
     if (state.selection.has(c.path)) parts.push('seleccionada');
+    if (state.transferred.has(c.path)) parts.push('ya transferida a otro disco');
     return parts.join(', ');
   }
 
@@ -607,8 +647,12 @@
         b.dataset.seleccionada = state.selection.has(c.path) ? '1' : '0';
       }
       if (!tiny) b.setAttribute('aria-label', cellAria(c, st));
+      if (c.kind === 'folder' && state.transferred.has(c.path)) {
+        b.dataset.transferida = '1';
+        b.setAttribute('aria-pressed', 'false');
+      }
 
-      if (r.w >= 56 && r.h >= 24) b.append(el('span', 'celda-nombre', cellTitle(c)));
+      if (r.w >= 56 && r.h >= 24) b.append(el('span', 'celda-nombre', state.transferred.has(c.path) ? `${cellTitle(c)} (ya transferida)` : cellTitle(c)));
       if (r.w >= 70 && r.h >= 40) b.append(el('span', 'celda-tam', formatBytes(c.size)));
       if (r.w >= 110 && r.h >= 58 && c.daysUnused !== null) b.append(el('span', 'celda-uso', `Sin uso ${formatUnused(c.daysUnused)}`));
       const marks = [];
@@ -787,18 +831,18 @@
   // ---------------------------------------------------------- menú contextual
 
   function menuItems(c) {
-    const NEXT = 'Disponible en la próxima versión';
     if (c.kind === 'files') {
       return [{ id: 'reveal', text: 'Mostrar en el Explorador' }];
     }
-    const reason = c.protected ? 'Protegida por el sistema' : NEXT;
+    if (state.transferred.has(c.path)) return [{ id: 'gone', text: 'Ya transferida a otro disco', disabled: true, reason: 'Vuelve a escanear para actualizar el mapa' }];
+    const reason = c.protected ? 'Protegida por el sistema' : undefined;
     return [
       { id: 'enter', text: 'Entrar a la carpeta', disabled: !c.canEnter, reason: c.canEnter ? undefined : 'No tiene subcarpetas' },
       { id: 'reveal', text: 'Mostrar en el Explorador' },
       { id: 'details', text: 'Ver detalles' },
       { sep: true },
-      { id: 'copy', text: 'Copiar a otro disco…', disabled: true, reason },
-      { id: 'move', text: 'Transferir a otro disco (mover)…', disabled: true, reason },
+      { id: 'copy', text: 'Copiar a otro disco…', disabled: Boolean(reason), reason },
+      { id: 'move', text: 'Transferir a otro disco (mover)…', disabled: Boolean(reason), reason },
       { sep: true },
       { id: 'ignore', text: 'Ignorar esta carpeta' },
     ];
@@ -861,6 +905,7 @@
     else if (action === 'reveal') reveal(c.kind === 'files' ? state.map.data.folder.path : c.path);
     else if (action === 'details') openDetails(c.path, cellEl);
     else if (action === 'ignore') ignore(c.path);
+    else if (action === 'copy' || action === 'move') startTransfer(action, c);
   }
 
   function onMenuKey(e) {
@@ -1032,6 +1077,7 @@
     }
     state.summary = summary;
     state.selection.clear(); // la selección es de UN escaneo
+    state.transferred.clear();
     state.map = { path: null, data: null, token: state.map.token + 1 };
     $('res-carpeta').textContent = state.folder;
     $('res-atime').textContent = summary.atimeReliability.message;

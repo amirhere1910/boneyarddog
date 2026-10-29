@@ -21,7 +21,7 @@ jobs:
         run: npm test
       - name: Prueba de humo (abre la app, escanea y revisa la ventana)
         run: npm run smoke
-      - name: Prueba del motor de transferencia (volúmenes, copia, Papelera real, cuarentena)
+      - name: Prueba del motor de transferencia (volúmenes, copia, Papelera real, borrado definitivo)
         if: always()
         run: npm run smoke:transfer
       - name: Guardar capturas y resultados

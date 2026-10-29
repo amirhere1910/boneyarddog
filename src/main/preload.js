@@ -25,11 +25,30 @@ contextBridge.exposeInMainWorld('byd', {
   getTreemap: (p, options) => ipcRenderer.invoke('byd:treemap', p, options),
   getDetails: (p) => ipcRenderer.invoke('byd:details', p),
   summarizeSelection: (paths) => ipcRenderer.invoke('byd:summarize-selection', paths),
+  // Copiar y transferir. NINGUNA de estas funciones recibe una ruta de destino: el destino lo fija el
+  // proceso principal (diálogo del sistema o unidad detectada) y se usa «el destino elegido».
+  chooseDestination: () => ipcRenderer.invoke('byd:choose-destination'),
+  chooseDestinationDrive: (letter) => ipcRenderer.invoke('byd:choose-destination-drive', letter),
+  listDestinationDrives: () => ipcRenderer.invoke('byd:list-destination-drives'),
+  transferPreflight: (options) => ipcRenderer.invoke('byd:transfer-preflight', options),
+  transferRun: (planId) => ipcRenderer.invoke('byd:transfer-run', planId),
+  transferCancel: () => ipcRenderer.invoke('byd:transfer-cancel'),
+  transferDeleteFromResult: (runId, indices, confirm) => ipcRenderer.invoke('byd:transfer-delete-from-result', runId, indices, confirm),
+  transferRemoveCopy: (runId) => ipcRenderer.invoke('byd:transfer-remove-copy', runId),
+  verifyBatchChooseFolder: () => ipcRenderer.invoke('byd:verify-batch-choose-folder'),
+  verifyBatchRun: (options) => ipcRenderer.invoke('byd:verify-batch-run', options),
   /** Suscribe a los avisos de progreso. Devuelve una función para darse de baja. */
   onProgress: (callback) => {
     if (typeof callback !== 'function') throw new TypeError('onProgress necesita una función');
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('byd:progress', listener);
     return () => ipcRenderer.removeListener('byd:progress', listener);
+  },
+  /** Avisos de progreso de una copia o de una verificación. Devuelve una función para darse de baja. */
+  onTransferProgress: (callback) => {
+    if (typeof callback !== 'function') throw new TypeError('onTransferProgress necesita una función');
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('byd:transfer-progress', listener);
+    return () => ipcRenderer.removeListener('byd:transfer-progress', listener);
   },
 });

@@ -26,7 +26,23 @@ const CHANNELS = Object.freeze({
   details: 'byd:details',
   summarizeSelection: 'byd:summarize-selection',
   progress: 'byd:progress',
+  // Copiar y transferir (Fase 3B). El destino NUNCA viaja desde la interfaz: sale del diálogo del sistema
+  // o de una unidad que el principal detecta, y se guarda en el principal.
+  chooseDestination: 'byd:choose-destination',
+  chooseDestinationDrive: 'byd:choose-destination-drive',
+  listDestinationDrives: 'byd:list-destination-drives',
+  transferPreflight: 'byd:transfer-preflight',
+  transferRun: 'byd:transfer-run',
+  transferCancel: 'byd:transfer-cancel',
+  transferProgress: 'byd:transfer-progress',
+  transferDeleteFromResult: 'byd:transfer-delete-from-result',
+  transferRemoveCopy: 'byd:transfer-remove-copy',
+  verifyBatchChooseFolder: 'byd:verify-batch-choose-folder',
+  verifyBatchRun: 'byd:verify-batch-run',
 });
+
+const MAX_TRANSFER_SOURCES = 500;
+const TRANSFER_KEYS = ['mode', 'verify', 'disposal', 'confirmPermanentDelete', 'sources'];
 
 class ValidationError extends Error {
   constructor(message) {
@@ -91,6 +107,86 @@ function validateDriveLetter(l) {
   return l.toUpperCase();
 }
 
+// ------------------------------------------------------------------ copiar y transferir
+
+/**
+ * Ruta de DESTINO que el principal recibió del diálogo del sistema (nunca de la interfaz):
+ * absoluta, sin \0 ni "..", y local. Las rutas de red (\\servidor\recurso) no se admiten como destino;
+ * en Windows tiene que empezar por una letra de unidad.
+ */
+function validateDestinationPath(p, { platform = process.platform } = {}) {
+  if (typeof p !== 'string' || p.length === 0) throw new ValidationError('La ruta debe ser un texto no vacío');
+  if (p.length > MAX_PATH_LENGTH) throw new ValidationError('La ruta es demasiado larga');
+  if (p.includes('\0')) throw new ValidationError('La ruta contiene caracteres nulos');
+  if (!(platform === 'win32' ? path.win32 : path.posix).isAbsolute(p)) throw new ValidationError('La ruta debe ser absoluta');
+  if (p.split(/[\\/]+/).includes('..')) throw new ValidationError('La ruta no puede contener ".."');
+  if (/^[\\/]{2}/.test(p) && !/^[\\/]{2}[?.][\\/][A-Za-z]:[\\/]/.test(p)) throw new ValidationError('No se admiten rutas de red como destino: elige una unidad con letra');
+  if (platform === 'win32' && !/^(?:[\\/]{2}[?.][\\/])?[A-Za-z]:[\\/]/.test(p)) throw new ValidationError('El destino debe estar en una unidad con letra (por ejemplo D:\\)');
+  return p;
+}
+
+/** Identificador de plan o de resultado: 16 caracteres hexadecimales que generó el servicio. */
+function validateOpaqueId(id) {
+  if (typeof id !== 'string' || !/^[0-9a-f]{16}$/.test(id)) throw new ValidationError('Identificador no válido');
+  return id;
+}
+
+/** Lista de posiciones (enteros >= 0, sin repetir). El límite superior real lo comprueba el servicio con el resultado. */
+function validateIndexList(list, max = MAX_TRANSFER_SOURCES) {
+  if (!Array.isArray(list) || list.length < 1 || list.length > max) throw new ValidationError(`Debe ser una lista de 1 a ${max} posiciones`);
+  const seen = new Set();
+  for (const i of list) {
+    if (!Number.isInteger(i) || i < 0 || i >= max) throw new ValidationError('Cada posición debe ser un entero entre 0 y ' + (max - 1));
+    if (seen.has(i)) throw new ValidationError('Hay posiciones repetidas');
+    seen.add(i);
+  }
+  return list;
+}
+
+/** Un booleano de verdad (no "true", ni 1). */
+function validateBoolean(b) {
+  if (typeof b !== 'boolean') throw new ValidationError('Se esperaba verdadero o falso');
+  return b;
+}
+
+/**
+ * Petición de revisión previa. SIN destino: el principal usa el que el usuario eligió. Solo estas claves.
+ * @returns {{mode: string, verify: string, disposal: string, confirmPermanentDelete: boolean, sources: string[]}}
+ */
+function validateTransferPreflight(options) {
+  if (options === null || typeof options !== 'object' || Array.isArray(options)) throw new ValidationError('La petición debe ser un objeto');
+  for (const key of Object.keys(options)) if (!TRANSFER_KEYS.includes(key)) throw new ValidationError(`Dato no admitido: ${key}`);
+  const { mode, verify = 'full', disposal = 'ninguna', confirmPermanentDelete = false, sources } = options;
+  if (mode !== 'copy' && mode !== 'move') throw new ValidationError('El modo debe ser «copy» o «move»');
+  if (verify !== 'full' && verify !== 'quick') throw new ValidationError('La verificación debe ser «full» o «quick»');
+  if (!['papelera', 'borrar', 'ninguna'].includes(disposal)) throw new ValidationError('Qué hacer con el original: «papelera», «borrar» o «ninguna»');
+  validateBoolean(confirmPermanentDelete);
+  if (mode === 'copy' && disposal !== 'ninguna') throw new ValidationError('Copiar no retira el original');
+  if (mode === 'move' && verify !== 'full') throw new ValidationError('Transferir exige la verificación completa');
+  if (confirmPermanentDelete && !(mode === 'move' && disposal === 'borrar')) throw new ValidationError('La confirmación solo vale para el borrado definitivo');
+  if (!Array.isArray(sources) || sources.length < 1) throw new ValidationError('Hay que indicar al menos una carpeta');
+  validatePathList(sources, MAX_TRANSFER_SOURCES);
+  return { mode, verify, disposal, confirmPermanentDelete, sources };
+}
+
+/** Borrado definitivo desde un resultado: (runId, posiciones, confirmación explícita). */
+function validateDeleteFromResult(runId, indices, confirm) {
+  validateOpaqueId(runId);
+  validateIndexList(indices);
+  if (confirm !== true) throw new ValidationError('Falta la confirmación del borrado definitivo');
+  return { runId, indices };
+}
+
+/** Opciones de «verificar una copia anterior»: solo { mode: 'full' | 'quick' } (por defecto, completa). */
+function validateVerifyBatchOptions(options) {
+  if (options === undefined) return { mode: 'full' };
+  if (options === null || typeof options !== 'object' || Array.isArray(options)) throw new ValidationError('Las opciones deben ser un objeto');
+  for (const key of Object.keys(options)) if (key !== 'mode') throw new ValidationError(`Dato no admitido: ${key}`);
+  const mode = options.mode === undefined ? 'full' : options.mode;
+  if (mode !== 'full' && mode !== 'quick') throw new ValidationError('La verificación debe ser «full» o «quick»');
+  return { mode };
+}
+
 /** Los canales que no reciben datos deben llamarse sin argumentos. */
 function validateNoArgs(args) {
   if (!Array.isArray(args) || args.length !== 0) throw new ValidationError('Este mensaje no admite argumentos');
@@ -145,6 +241,14 @@ module.exports = {
   validateTreemapOptions,
   validatePathList,
   validateNoArgs,
+  MAX_TRANSFER_SOURCES,
+  validateDestinationPath,
+  validateOpaqueId,
+  validateIndexList,
+  validateBoolean,
+  validateTransferPreflight,
+  validateDeleteFromResult,
+  validateVerifyBatchOptions,
   isTrustedSender,
   sameFileUrl,
 };

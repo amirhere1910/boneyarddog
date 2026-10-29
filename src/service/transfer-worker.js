@@ -19,6 +19,9 @@ const { createTransferEngine } = require('../core/transfer');
 const { volumeInfoForPath } = require('../main/volume-info');
 
 const hasTrash = Boolean(workerData && workerData.hasTrash);
+// Solo la prueba automática lo pasa: las carpetas cuyo nombre empieza así se tratan como si estuvieran en un disco extraíble
+// (sin Papelera), para poder recorrer en la interfaz el camino «probablemente no cabe en la Papelera».
+const smokeRemovablePrefix = workerData && typeof workerData.smokeRemovablePrefix === 'string' ? workerData.smokeRemovablePrefix : null;
 const progressIntervalMs = workerData && Number.isFinite(workerData.progressIntervalMs) && workerData.progressIntervalMs >= 0 ? workerData.progressIntervalMs : 200;
 const version = (() => {
   try {
@@ -38,7 +41,11 @@ function askMainToTrash(p) {
 }
 
 const engine = createTransferEngine({
-  volumeInfo: (p) => volumeInfoForPath(p),
+  volumeInfo: async (p) => {
+    const info = await volumeInfoForPath(p);
+    if (smokeRemovablePrefix && require('node:path').basename(String(p)).startsWith(smokeRemovablePrefix)) return { ...info, driveType: 'removable' };
+    return info;
+  },
   trash: hasTrash ? askMainToTrash : null,
   appVersion: version,
 });
@@ -59,10 +66,14 @@ function summarizePlan(plan) {
     mode: plan.mode,
     verify: plan.verify,
     disposal: plan.disposal,
+    confirmPermanentDelete: plan.confirmPermanentDelete === true,
+    recycleVerdict: plan.recycleVerdict || null,
+    destinationRoot: plan.destinationRoot,
     fileSystem: plan.fileSystem,
     totals: plan.totals,
     sources: plan.sources.map((s) => ({
       source: s.source,
+      requested: s.requested,
       files: s.files,
       dirs: s.dirs,
       bytes: s.bytes,
@@ -83,8 +94,24 @@ function summarizeRun(result, runId) {
     batchFolder: result.batchFolder,
     lote: result.lote,
     totales: result.totales,
-    carpetas: result.carpetas.map((c) => ({ ...c, errores: c.errores.slice(0, 50), erroresTotal: c.errores.length })),
+    carpetas: result.carpetas.map(summarizeFolder),
   };
+}
+
+const MAX_LIST = 500;
+/** Una carpeta del resultado, acotada: nunca viajan listas enormes (el detalle completo está en MANIFIESTO.json). */
+function summarizeFolder(c) {
+  const out = { ...c, errores: c.errores.slice(0, 50), erroresTotal: c.errores.length };
+  if (c.borradoParcial) {
+    out.borradoParcial = {
+      error: c.borradoParcial.error,
+      borradosTotal: c.borradoParcial.borrados.length,
+      restantesTotal: c.borradoParcial.restantes.length,
+      borrados: c.borradoParcial.borrados.slice(0, MAX_LIST),
+      restantes: c.borradoParcial.restantes.slice(0, MAX_LIST),
+    };
+  }
+  return out;
 }
 
 const handlers = {
@@ -144,6 +171,19 @@ const handlers = {
     const result = runs.get(runId);
     if (!result) throw new ServiceError('Resultado desconocido', 'RESULTADO_DESCONOCIDO');
     return engine.quitarCopiado(result);
+  },
+
+  async eliminarDefinitivamente(runId, indices, confirm) {
+    if (running) throw new ServiceError('Ya hay una transferencia en curso', 'OCUPADO');
+    const result = runs.get(runId);
+    if (!result) throw new ServiceError('Resultado desconocido', 'RESULTADO_DESCONOCIDO');
+    running = { controller: new AbortController() };
+    try {
+      const out = await engine.eliminarDefinitivamente(result, indices, { confirm });
+      return { estado: out.estado, manifiestoActualizado: out.manifiestoActualizado, resumen: summarizeRun(result, runId) };
+    } finally {
+      running = null;
+    }
   },
 };
 

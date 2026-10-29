@@ -14,9 +14,10 @@
       <h1>BoneYardDog</h1>
       <p class="subtitulo">Encuentra carpetas grandes que llevan tiempo sin usarse.</p>
     </div>
+    <button id="btn-verificar-copia" type="button" class="secundario cabecera-boton">Verificar una copia anterior…</button>
   </header>
 
-  <p class="aviso" role="note">Esta versión solo analiza. No borra ni mueve nada.</p>
+  <p class="aviso" role="note">Prueba primero con datos de prueba, nunca con datos que no tengas respaldados.</p>
 
   <p id="mensaje" class="mensaje" role="alert" hidden></p>
 
@@ -144,10 +145,7 @@
         <p id="vacio-creacion" class="nota" hidden>Si copiaste carpetas hace poco desde otro equipo o disco, su fecha de creación es reciente y cuenta como uso. Puedes desactivarlo en Opciones avanzadas.</p>
         <ul id="lista" class="lista" aria-label="Carpetas sin uso"></ul>
 
-        <div class="fila acciones-pie">
-          <button id="btn-mover" type="button" disabled aria-describedby="txt-mover">Mover a disco externo…</button>
-          <span id="txt-mover" class="nota">Disponible en la próxima versión</span>
-        </div>
+        <p class="nota acciones-pie">Marca carpetas con «Seleccionar» y usa «Copiar…» o «Transferir…» en la barra de abajo.</p>
       </div>
     </section>
 
@@ -182,15 +180,149 @@
     <p id="sel-texto" class="sel-texto" role="status"></p>
     <p id="sel-excluidas" class="nota" hidden></p>
     <div class="fila">
-      <button id="btn-sel-copiar" type="button" disabled aria-describedby="txt-sel-proxima">Copiar…</button>
-      <button id="btn-sel-transferir" type="button" disabled aria-describedby="txt-sel-proxima">Transferir…</button>
-      <span id="txt-sel-proxima" class="nota">Disponible en la próxima versión</span>
+      <button id="btn-sel-copiar" type="button">Copiar a otro disco…</button>
+      <button id="btn-sel-transferir" type="button">Transferir a otro disco (mover)…</button>
       <button id="btn-sel-limpiar" type="button" class="secundario">Limpiar selección</button>
     </div>
   </div>
 
+  <!-- Asistente de copiar y transferir (diálogo propio, no window.confirm) -->
+  <dialog id="dlg-transferir" class="dialogo" aria-labelledby="dlg-titulo">
+    <div class="dlg-cabecera">
+      <h2 id="dlg-titulo" tabindex="-1">Copiar a otro disco</h2>
+      <p id="dlg-paso" class="nota"></p>
+    </div>
+
+    <div class="dlg-cuerpo">
+      <p id="dlg-error" class="mensaje" role="alert" hidden></p>
+
+      <!-- Paso 1: destino -->
+      <section id="paso-destino" aria-label="Paso 1: destino">
+        <p id="dlg-resumen-origen" class="resumen-origen"></p>
+        <fieldset class="grupo">
+          <legend>¿A qué disco quieres enviarlo?</legend>
+          <p id="dlg-unidades-estado" class="nota" role="status">Buscando unidades…</p>
+          <div id="dlg-unidades" class="unidades-lista" role="radiogroup" aria-label="Unidades de destino"></div>
+          <div class="fila"><button id="dlg-otra-carpeta" type="button" class="secundario">Elegir otra carpeta…</button></div>
+          <p id="dlg-destino-elegido" class="destino-elegido" role="status">Todavía no elegiste un destino.</p>
+          <p id="dlg-nota-formato" class="nota" hidden></p>
+        </fieldset>
+        <fieldset class="grupo" id="dlg-verificacion">
+          <legend>Verificación</legend>
+          <label class="opcion"><input type="radio" name="verif" value="full" checked><span class="opcion-texto"><strong>Completa (recomendada)</strong><span class="nota">Compara el contenido de cada archivo (huella SHA-256). Es más lenta.</span></span></label>
+          <label class="opcion"><input type="radio" name="verif" value="quick" id="dlg-verif-rapida"><span class="opcion-texto"><strong>Rápida (solo tamaño y fecha; no comprueba el contenido)</strong><span id="dlg-verif-rapida-nota" class="nota"></span></span></label>
+        </fieldset>
+      </section>
+
+      <!-- Paso 2: revisión previa -->
+      <section id="paso-revision" aria-label="Paso 2: revisión previa" hidden>
+        <p id="rev-estado" class="nota" role="status">Revisando…</p>
+        <dl id="rev-cifras" class="cifras" hidden></dl>
+        <div id="rev-impedimentos" class="caja caja-error" role="alert" hidden>
+          <h3>No se puede continuar</h3>
+          <ul id="rev-impedimentos-lista"></ul>
+        </div>
+        <div id="rev-avisos" class="caja caja-aviso" hidden>
+          <h3>Avisos</h3>
+          <ul id="rev-avisos-lista"></ul>
+        </div>
+        <fieldset id="rev-papelera" class="grupo" hidden>
+          <legend>Esto probablemente no cabe en la Papelera (o este disco no tiene Papelera). ¿Qué quieres hacer?</legend>
+          <label class="opcion"><input type="radio" name="papelera" value="borrar"><span class="opcion-texto"><strong>Borrar definitivamente el original cuando la copia esté verificada</strong><span class="nota">No pasa por la Papelera: no se podrá recuperar.</span></span></label>
+          <label class="opcion"><input type="radio" name="papelera" value="dejar"><span class="opcion-texto"><strong>Dejar el original (solo copiar)</strong><span class="nota">La copia se verifica por completo y el original no se toca.</span></span></label>
+        </fieldset>
+        <div id="rev-borrar-confirmar" class="caja caja-peligro" role="group" aria-labelledby="rev-borrar-titulo" hidden>
+          <h3 id="rev-borrar-titulo">Confirma el borrado definitivo</h3>
+          <p id="rev-borrar-texto"></p>
+          <label class="check"><input type="checkbox" id="rev-entiendo"> Entiendo que no se podrá recuperar</label>
+        </div>
+        <p id="rev-papelera-nota" class="nota" hidden>Cuando la copia esté verificada por completo, el original se enviará a la Papelera de Windows.</p>
+      </section>
+
+      <!-- Paso 3: progreso -->
+      <section id="paso-progreso" aria-label="Paso 3: progreso" hidden>
+        <p id="prog-fase" class="prog-fase" role="status"></p>
+        <div id="prog-barra" class="barra barra-real" role="progressbar" aria-label="Progreso total" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="prog-relleno" class="barra-relleno"></div></div>
+        <p id="prog-porcentaje" class="nota"></p>
+        <dl class="cifras cifras-prog">
+          <div><dt>Bytes</dt><dd id="prog-bytes">–</dd></div>
+          <div><dt>Archivos</dt><dd id="prog-archivos">–</dd></div>
+          <div><dt>Velocidad</dt><dd id="prog-velocidad">–</dd></div>
+          <div><dt>Tiempo restante</dt><dd id="prog-eta">–</dd></div>
+        </dl>
+        <p class="nota">Archivo actual:</p>
+        <p id="prog-archivo" class="ruta ruta-actual"></p>
+        <p id="prog-aviso" class="nota">Si cancelas, los originales no se tocan.</p>
+      </section>
+
+      <!-- Resultado -->
+      <section id="paso-resultado" aria-label="Resultado" hidden>
+        <h3 id="res-titular" tabindex="-1" class="res-titular"></h3>
+        <ul id="res-carpetas" class="res-carpetas"></ul>
+        <p id="res-lote" class="ruta"></p>
+        <p id="res-aviso-usb" class="nota">Los discos USB pueden servir la verificación desde memoria: después de expulsar y volver a conectar el disco, usa «Verificar una copia anterior».</p>
+        <div id="res-aviso-reescanear" class="nota" hidden>Se retiró al menos un original. Los tamaños del mapa y de la lista se actualizan al volver a escanear.</div>
+        <div id="res-papelera-fallo" class="caja caja-peligro" role="group" aria-labelledby="res-papelera-titulo" hidden>
+          <h3 id="res-papelera-titulo">No se pudo enviar a la Papelera</h3>
+          <p id="res-papelera-texto">No se pudo enviar a la Papelera. Los originales siguen en su sitio. ¿Quieres borrarlos definitivamente?</p>
+          <p id="res-papelera-cifras"></p>
+          <label class="check"><input type="checkbox" id="res-entiendo"> Entiendo que no se podrá recuperar</label>
+          <div class="fila"><button id="res-borrar" type="button" class="peligro" disabled>Borrar definitivamente los originales</button></div>
+        </div>
+        <div id="res-quitar-confirmar" class="caja caja-aviso" role="group" aria-labelledby="res-quitar-titulo" hidden>
+          <h3 id="res-quitar-titulo">¿Quitar la copia?</h3>
+          <p>Se borra solo lo que BoneYardDog copió en el destino. Tus originales no se tocan (ninguno se retiró).</p>
+          <div class="fila">
+            <button id="res-quitar-si" type="button">Sí, quitar la copia</button>
+            <button id="res-quitar-no" type="button" class="secundario">No</button>
+          </div>
+        </div>
+        <div id="res-verificacion" class="caja" role="status" hidden>
+          <h3 id="res-verif-titular"></h3>
+          <ul id="res-verif-lista"></ul>
+        </div>
+        <div class="fila fila-envuelve" id="res-botones">
+          <button id="res-abrir" type="button" class="secundario">Abrir la copia en el Explorador</button>
+          <button id="res-verificar" type="button" class="secundario">Verificar de nuevo la copia</button>
+          <button id="res-quitar" type="button" class="secundario">Quitar la copia</button>
+        </div>
+      </section>
+
+      <!-- Verificar una copia anterior -->
+      <section id="paso-verificar" aria-label="Verificar una copia anterior" hidden>
+        <p>Elige la carpeta de una copia que hizo BoneYardDog (la que tiene la fecha, dentro de «BoneYardDog», y contiene <code>MANIFIESTO.json</code>). Conviene hacerlo después de expulsar y volver a conectar el disco.</p>
+        <div class="fila"><button id="ver-elegir" type="button" class="secundario">Elegir la carpeta de la copia…</button></div>
+        <p id="ver-elegida" class="destino-elegido" role="status">Todavía no elegiste ninguna copia.</p>
+        <label class="check"><input type="checkbox" id="ver-rapida"> Solo tamaño y fecha (rápida; no comprueba el contenido)</label>
+        <div id="ver-progreso" hidden>
+          <div class="barra barra-real" role="progressbar" aria-label="Progreso de la verificación" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="ver-relleno" class="barra-relleno"></div></div>
+          <p id="ver-progreso-texto" class="nota" role="status"></p>
+        </div>
+        <div id="ver-resultado" class="caja" role="status" hidden>
+          <h3 id="ver-titular" tabindex="-1"></h3>
+          <ul id="ver-lista"></ul>
+        </div>
+      </section>
+    </div>
+
+    <div class="dlg-pie">
+      <p id="dlg-razon" class="nota dlg-razon" role="status"></p>
+      <div class="fila fila-envuelve fila-derecha">
+        <button id="dlg-atras" type="button" class="secundario">Atrás</button>
+        <button id="dlg-cancelar" type="button" class="secundario">Cancelar</button>
+        <button id="dlg-siguiente" type="button">Siguiente</button>
+        <button id="dlg-empezar" type="button">Empezar</button>
+        <button id="dlg-cancelar-op" type="button" class="secundario">Cancelar la operación</button>
+        <button id="dlg-verificar-ya" type="button">Verificar</button>
+        <button id="dlg-cerrar" type="button">Cerrar</button>
+      </div>
+    </div>
+  </dialog>
+
   <script src="../shared/activity.js"></script>
   <script src="../shared/treemap.js"></script>
+  <script src="../shared/transfer-wizard.js"></script>
+  <script src="transfer-ui.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

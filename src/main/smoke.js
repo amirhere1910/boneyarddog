@@ -15,19 +15,32 @@
  *     lo guardado en settings.json coincide.
  *  5. Comprueba el aislamiento de la ventana y el bloqueo de red.
  *  6. Guarda smoke-artifacts/mapa.png, lista.png y resultado.json; termina con código
- *     0 o 1 (máximo 90 s).
+ *     0 o 1 (máximo 150 s).
  */
 
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
+const { splitAbsolute } = require('../core/transfer');
 const { sameFileUrl } = require('./validate');
 const { isProtectedPath } = require('../core/protected');
 
 // BYD_SMOKE_TIMEOUT_MS solo existe para probar la ruta de tiempo agotado.
-const TIME_LIMIT_MS = Number(process.env.BYD_SMOKE_TIMEOUT_MS) || 90_000;
+const TIME_LIMIT_MS = Number(process.env.BYD_SMOKE_TIMEOUT_MS) || 150_000;
 const DAY = 24 * 60 * 60 * 1000;
 
 const BRIDGE_KEYS = [
+  'chooseDestination',
+  'chooseDestinationDrive',
+  'listDestinationDrives',
+  'onTransferProgress',
+  'transferCancel',
+  'transferDeleteFromResult',
+  'transferPreflight',
+  'transferRemoveCopy',
+  'transferRun',
+  'verifyBatchChooseFolder',
+  'verifyBatchRun',
   'cancelScan',
   'chooseDrive',
   'chooseFolder',
@@ -121,6 +134,48 @@ function buildManyFixture(base) {
   return root;
 }
 
+/** Carpetas para el asistente de copiar y transferir (cada una con archivos de contenido distinto). */
+function buildWizardFixture(base) {
+  const root = fs.mkdtempSync(path.join(base, 'asistente-'));
+  const folder = (name, big) => {
+    const dir = path.join(root, name);
+    write(path.join(dir, 'a.bin'), 3000, 400);
+    write(path.join(dir, 'sub', 'b.bin'), 2000, 300);
+    write(path.join(dir, 'canción ñandú 🐕.txt'), 1500, 200);
+    fs.mkdirSync(path.join(dir, 'vacía'), { recursive: true });
+    write(path.join(dir, 'relleno.bin'), 2 * 1024 * 1024, 100); // para que todas tengan un cuadro propio en el mapa
+    if (big) write(path.join(dir, 'grande.bin'), big, 100);
+    return dir;
+  };
+  return {
+    root,
+    copiar: folder('Copiar con progreso', 24 * 1024 * 1024),
+    papelera: folder('Papelera real'),
+    falla: folder('Papelera que falla'),
+    borrar: folder('Removible borrar'),
+    sinConfirmar: folder('Removible sin confirmar'),
+    dejar: folder('Removible dejar'),
+  };
+}
+
+/** Foto independiente de un árbol (tipos, tamaños y huellas): la prueba no se fía del motor. */
+function treeSnapshot(root) {
+  const out = {};
+  (function walk(dir, rel) {
+    for (const name of fs.readdirSync(dir).sort()) {
+      const full = path.join(dir, name);
+      const r = rel ? `${rel}/${name}` : name;
+      const st = fs.lstatSync(full);
+      if (st.isDirectory()) {
+        out[r] = 'dir';
+        walk(full, r);
+      } else out[r] = `${st.size}:${crypto.createHash('sha256').update(fs.readFileSync(full)).digest('hex')}`;
+    }
+  })(root, '');
+  return out;
+}
+const sameTree = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
 /** Antes de abrir la ventana: carpetas de ejemplo y configuración de prueba. */
 async function prepare({ app, settings, service }) {
   const fixture = buildFixture(app);
@@ -199,7 +254,7 @@ const READ_WINDOW = `(() => {
       tramosTexto: [...document.querySelectorAll('#det-tramos li')].map((li) => li.textContent),
       subs: [...document.querySelectorAll('#det-subcarpetas li')].map((li) => li.dataset.ruta),
     },
-    seleccion: { visible: !hidden('barra-seleccion'), texto: sel.textContent, cantidad: Number(sel.dataset.cantidad), bytes: Number(sel.dataset.bytes), nota: hidden('sel-excluidas') ? '' : text('sel-excluidas'), copiarDeshabilitado: document.getElementById('btn-sel-copiar').disabled, transferirDeshabilitado: document.getElementById('btn-sel-transferir').disabled, proxima: text('txt-sel-proxima') },
+    seleccion: { visible: !hidden('barra-seleccion'), texto: sel.textContent, cantidad: Number(sel.dataset.cantidad), bytes: Number(sel.dataset.bytes), nota: hidden('sel-excluidas') ? '' : text('sel-excluidas'), copiarDeshabilitado: document.getElementById('btn-sel-copiar').disabled, transferirDeshabilitado: document.getElementById('btn-sel-transferir').disabled },
     lista: {
       titulo: { texto: title.textContent, cantidad: Number(title.dataset.cantidad), bytes: Number(title.dataset.bytes) },
       items: [...document.querySelectorAll('#lista > li.carpeta')].map((li) => ({
@@ -213,9 +268,6 @@ const READ_WINDOW = `(() => {
         botones: [...li.querySelectorAll('button')].map((b) => b.textContent),
       })),
       vacio: !hidden('vacio'),
-      moverDeshabilitado: document.getElementById('btn-mover').disabled,
-      moverTexto: text('btn-mover'),
-      moverAyuda: text('txt-mover'),
       omitidosVisible: !hidden('aviso-omitidos'),
       minimo: document.getElementById('sel-minimo').value,
     },
@@ -360,6 +412,314 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
   const names = (s) => s.mapa.celdas.map((c) => c.nombre);
   const cellOf = (s, ruta) => s.mapa.celdas.find((c) => c.ruta === ruta);
 
+  // --- Asistente de copiar y transferir (ratón y teclado reales, disco real, Papelera real) -----------------
+  async function wizardScenarios() {
+    const wf = buildWizardFixture(fixture.base);
+    // Destino de prueba: NO dentro de AppData. En Windows, en otro volumen del runner si existe.
+    const sysDrive = (process.env.SystemDrive || 'C:').toUpperCase();
+    const repoDrive = /^[A-Za-z]:/.test(wf.root) ? wf.root.slice(0, 2).toUpperCase() : null;
+    const destBase = process.platform === 'win32' ? path.join(`${repoDrive === sysDrive ? 'C:' : sysDrive}\\`, `byd-smoke-dest-${path.basename(wf.root)}`) : path.join(fixture.base, `destino-${path.basename(wf.root)}`);
+    fs.mkdirSync(destBase, { recursive: true });
+    report.wizard = { destBase, root: wf.root };
+    const created = [destBase];
+    check('asistente: el destino de prueba no es una ruta protegida', !isProtectedPath(destBase) && !isProtectedPath(wf.root), destBase);
+    context.smokeDestination = destBase;
+    win.setSize(720, 520); // ventana mínima: el diálogo tiene que caber
+    await sleep(300);
+    await js("document.getElementById('btn-nuevo').click()");
+    await waitFor((s) => s.estado === 'inicio', 'volver al inicio (asistente)');
+    context.smokeFolder = wf.root;
+    await js("document.getElementById('btn-elegir').click()");
+    await settled((s) => s.mapa.carpeta === wf.root && s.mapa.celdas.filter((c) => c.tipo === 'folder').length >= 6, 'el mapa de las carpetas del asistente');
+
+    const dialogState = () =>
+      js(`(() => {
+        const d = document.getElementById('dlg-transferir');
+        const r = d.getBoundingClientRect();
+        const pie = document.querySelector('.dlg-pie').getBoundingClientRect();
+        const vis = (id) => !document.getElementById(id).hidden;
+        const txt = (id) => document.getElementById(id).textContent;
+        const dis = (id) => document.getElementById(id).disabled;
+        return {
+          abierto: d.open, rect: { l: r.left, t: r.top, r: r.right, b: r.bottom }, pie: { b: pie.bottom }, ancho: window.innerWidth, alto: window.innerHeight,
+          titulo: txt('dlg-titulo'), paso: txt('dlg-paso'), razon: txt('dlg-razon'), error: vis('dlg-error') ? txt('dlg-error') : '',
+          pasos: ['destino', 'revision', 'progreso', 'resultado', 'verificar'].filter((p) => vis('paso-' + p)),
+          destino: document.getElementById('dlg-destino-elegido').dataset.ruta || '',
+          rapidaDeshabilitada: dis('dlg-verif-rapida'),
+          siguiente: { v: vis('dlg-siguiente'), d: dis('dlg-siguiente') }, empezar: { v: vis('dlg-empezar'), d: dis('dlg-empezar') },
+          cerrar: vis('dlg-cerrar'), cancelarOp: vis('dlg-cancelar-op'),
+          revEstadoVisible: vis('rev-estado'), cifras: vis('rev-cifras'), impedimentos: vis('rev-impedimentos') ? txt('rev-impedimentos-lista') : '',
+          avisos: [...document.querySelectorAll('#rev-avisos-lista li')].map((l) => l.dataset.codigo),
+          papelera: vis('rev-papelera'), borrarConfirmar: vis('rev-borrar-confirmar'), borrarTexto: txt('rev-borrar-texto'),
+          preseleccion: [...document.querySelectorAll('input[name="papelera"]')].some((i) => i.checked),
+          progFase: txt('prog-fase'),
+          titular: txt('res-titular'), tono: document.getElementById('res-titular').dataset.tono || '',
+          carpetas: [...document.querySelectorAll('#res-carpetas > li')].map((li) => ({ resultado: li.dataset.resultado, nombre: li.querySelector('.res-nombre').textContent, estado: li.querySelector('.res-estado').textContent, detalle: li.querySelector('.res-detalle').textContent })),
+          lote: txt('res-lote'),
+          botones: { abrir: vis('res-abrir'), verificar: vis('res-verificar'), quitar: vis('res-quitar'), borrarFallo: vis('res-papelera-fallo'), borrarHabilitado: !dis('res-borrar') },
+          verificacion: vis('res-verificacion') ? txt('res-verif-titular') : '',
+          verResultado: vis('ver-resultado') ? txt('ver-titular') : '', verElegida: txt('ver-elegida'),
+          verificarYa: { v: vis('dlg-verificar-ya'), d: dis('dlg-verificar-ya') },
+        };
+      })()`);
+    const waitDialog = async (pred, what) => {
+      if (process.env.BYD_SMOKE_DEBUG) console.log(`[smoke] esperando: ${what}`);
+      const waitStart = Date.now();
+      for (;;) {
+        const d = await dialogState();
+        if (pred(d)) return d;
+        if (Date.now() - waitStart > 40_000 || Date.now() - started > TIME_LIMIT_MS) throw new Error(`Se agotó el tiempo esperando: ${what} :: ${JSON.stringify(d)}`);
+        await sleep(60);
+      }
+    };
+    const fits = (d) => d.rect.l >= 0 && d.rect.t >= 0 && d.rect.r <= d.ancho && d.rect.b <= d.alto && d.pie.b <= d.alto;
+    const clickId = async (id) => realClick(await cellRect(`#${id}`));
+    const openFromMenu = async (folderPath, action) => {
+      await clickCell(folderPath, { button: 'right' });
+      await waitFor((s) => s.menu.abierto, 'el menú contextual (asistente)');
+      await realClick(await cellRect(`#menu-contextual [data-accion="${action}"]`));
+      return waitDialog((d) => d.abierto && d.pasos[0] === 'destino', 'el asistente abierto');
+    };
+    const chooseDest = async () => {
+      await clickId('dlg-otra-carpeta');
+      return waitDialog((d) => d.destino !== '' && !d.siguiente.d, 'el destino elegido');
+    };
+    const reals = new Map([wf.copiar, wf.papelera, wf.falla, wf.borrar, wf.sinConfirmar, wf.dejar].map((p) => [p, fs.realpathSync(p)])); // antes de que alguno desaparezca
+    const copyOf = (batchText, source) => {
+      const batch = batchText.replace(/^Copia en: /, '');
+      const { drive, parts } = splitAbsolute(reals.get(source));
+      return { batch, copy: path.join(batch, drive, ...parts) };
+    };
+    const shots = [];
+    const shot = async (name) => {
+      await snapshot(name);
+      shots.push(name);
+    };
+
+    // ===== (A) COPIAR: tres pasos, destino del sistema, verificación completa, contenido idéntico =====
+    {
+      const before = treeSnapshot(wf.copiar);
+      const d1 = await openFromMenu(wf.copiar, 'copy');
+      check('A copiar: el asistente se abre en el paso 1 con título «Copiar a otro disco»', d1.titulo === 'Copiar a otro disco' && d1.paso === 'Paso 1 de 3 · Destino', [d1.titulo, d1.paso]);
+      check('A copiar: «Siguiente» está desactivado hasta elegir un destino y dice por qué', d1.siguiente.d && /destino/.test(d1.razon), [d1.siguiente, d1.razon]);
+      check('A copiar: la verificación rápida está disponible al copiar', !d1.rapidaDeshabilitada, d1.rapidaDeshabilitada);
+      check('A copiar: el diálogo cabe en la ventana mínima (720×520) en el paso 1', fits(d1), d1);
+      await shot('asistente-1-destino.png');
+      const d1b = await chooseDest();
+      check('A copiar: el destino elegido es el de prueba y «Siguiente» se activa', path.resolve(d1b.destino) === path.resolve(destBase) && !d1b.siguiente.d, [d1b.destino, d1b.siguiente]);
+      await clickId('dlg-siguiente');
+      const d2 = await waitDialog((d) => d.pasos[0] === 'revision' && !d.revEstadoVisible && d.cifras, 'la revisión previa');
+      check('A copiar: paso 2 sin impedimentos y con «Empezar» activo', d2.impedimentos === '' && !d2.empezar.d && d2.paso === 'Paso 2 de 3 · Revisión previa', [d2.impedimentos, d2.empezar]);
+      check('A copiar: el diálogo cabe en la ventana mínima en el paso 2', fits(d2), d2);
+      await shot('asistente-2-revision.png');
+      await clickId('dlg-empezar');
+      let progressShot = false;
+      const dEnd = await waitDialog(async (d) => {
+        if (d.pasos[0] === 'progreso' && !progressShot) {
+          progressShot = true;
+          report.wizard.progresoFase = d.progFase;
+          report.wizard.progresoAjusta = fits(d);
+          await shot('asistente-3-progreso.png');
+        }
+        return d.pasos[0] === 'resultado';
+      }, 'el resultado de copiar').catch(() => null);
+      void dEnd;
+      const dRes = await waitDialog((d) => d.pasos[0] === 'resultado', 'el resultado (A)');
+      check('A copiar: el resultado dice «Listo» solo porque el motor devolvió «copiada-verificada»', /^Listo: 1 carpeta copiada y verificada/.test(dRes.titular) && dRes.tono === 'ok' && dRes.carpetas.length === 1 && dRes.carpetas[0].resultado === 'copiada-verificada', [dRes.titular, dRes.carpetas]);
+      const { batch, copy } = copyOf(dRes.lote, wf.copiar);
+      created.push(batch);
+      check('A copiar (EN DISCO): la copia es idéntica al original y el original no cambió', sameTree(before, treeSnapshot(copy)) && sameTree(before, treeSnapshot(wf.copiar)), copy);
+      check('A copiar: la copia quedó DENTRO del destino elegido', path.resolve(batch).startsWith(path.resolve(fs.realpathSync(destBase))), batch);
+      check('A copiar: botones del resultado (abrir, verificar, quitar) y sin borrado', dRes.botones.abrir && dRes.botones.verificar && dRes.botones.quitar && !dRes.botones.borrarFallo, dRes.botones);
+      check('A copiar: el diálogo cabe en la ventana mínima en el resultado', fits(dRes), dRes);
+      await shot('asistente-4-resultado.png');
+      report.wizard.batchA = batch;
+      await clickId('res-abrir');
+      await sleep(150);
+      check('A copiar: «Abrir la copia en el Explorador» pide mostrar la carpeta del lote que confirmó el motor', (report.revealCalls || []).includes(batch), report.revealCalls);
+
+      // Verificar de nuevo (botón del resultado) y quitar la copia.
+      await clickId('res-verificar');
+      const dv = await waitDialog((d) => /La copia está bien/.test(d.verificacion), 'verificar de nuevo la copia');
+      check('A copiar: «Verificar de nuevo la copia» dice que está bien', /La copia está bien: \d+ archivos verificados \(contenido comparado\)/.test(dv.verificacion), dv.verificacion);
+      await clickId('res-quitar');
+      await clickId('res-quitar-si');
+      await waitDialog((d) => /Copia quitada/.test(d.titular), 'quitar la copia');
+      check('A copiar (EN DISCO): «Quitar la copia» borró la copia y NO tocó el original', !fs.existsSync(batch) && sameTree(before, treeSnapshot(wf.copiar)), batch);
+      await clickId('dlg-cerrar');
+      const closed = await dialogState();
+      check('A copiar: «Cerrar» cierra el diálogo', !closed.abierto, closed.abierto);
+    }
+
+    // ===== (B) TRANSFERIR con la Papelera REAL: propiedades de seguridad =====
+    {
+      const before = treeSnapshot(wf.papelera);
+      const d1 = await openFromMenu(wf.papelera, 'move');
+      check('B transferir: título «Transferir a otro disco (mover)» y verificación rápida NO disponible', d1.titulo === 'Transferir a otro disco (mover)' && d1.rapidaDeshabilitada, [d1.titulo, d1.rapidaDeshabilitada]);
+      await chooseDest();
+      await clickId('dlg-siguiente');
+      const d2 = await waitDialog((d) => d.pasos[0] === 'revision' && !d.revEstadoVisible && d.cifras, 'la revisión (B)');
+      check('B transferir: sin impedimentos y sin pregunta de Papelera cuando cabe', d2.impedimentos === '' && !d2.papelera && !d2.empezar.d, [d2.impedimentos, d2.papelera, d2.empezar]);
+      await clickId('dlg-empezar');
+      const dRes = await waitDialog((d) => d.pasos[0] === 'resultado', 'el resultado (B)');
+      const { batch, copy } = copyOf(dRes.lote, wf.papelera);
+      created.push(batch);
+      const originalGone = !fs.existsSync(wf.papelera);
+      report.wizard.papelera = { originalGone, resultado: dRes.carpetas, titular: dRes.titular };
+      if (originalGone) {
+        check('B transferir (EN DISCO): el original se retiró Y la copia existe y es idéntica', sameTree(before, treeSnapshot(copy)), copy);
+        check('B transferir: la interfaz dice «enviado a la Papelera» (lo que el motor devolvió)', dRes.carpetas[0].resultado === 'original-enviado-a-papelera' && /Papelera/.test(dRes.carpetas[0].estado), dRes.carpetas);
+        check('B transferir: sin «Quitar la copia» (la copia es lo único que queda)', !dRes.botones.quitar, dRes.botones);
+      } else {
+        check('B transferir (EN DISCO): el original sigue intacto y se informó', sameTree(before, treeSnapshot(wf.papelera)) && dRes.carpetas[0].resultado === 'original-sin-tocar', dRes.carpetas);
+        check('B transferir: la interfaz explica que la Papelera falló y ofrece borrar', dRes.botones.borrarFallo, dRes.botones);
+      }
+      await clickId('dlg-cerrar');
+      await sleep(200);
+      const gone = await js(`(() => { const c = document.querySelector('#mapa .celda[data-ruta=${q(wf.papelera)}]'); return { cuadro: c ? c.dataset.transferida || '0' : 'sin-cuadro', marcadas: document.body.dataset.transferidas || '0' }; })()`);
+      // En una ventana pequeña el cuadro puede haberse plegado en «Otras»: entonces solo se comprueba el registro interno.
+      check('B transferir: si el original se retiró, queda registrado y su cuadro (si se ve) marcado «ya transferida»; si no, todo sigue normal', originalGone ? gone.marcadas === '1' && (gone.cuadro === '1' || gone.cuadro === 'sin-cuadro') : gone.marcadas === '0' && gone.cuadro !== '1', gone);
+    }
+
+    // ===== (C) La Papelera FALLA (simulado): el original queda; luego borrado definitivo con confirmación =====
+    {
+      context.smokeTrashFails = true;
+      const before = treeSnapshot(wf.falla);
+      await openFromMenu(wf.falla, 'move');
+      await chooseDest();
+      await clickId('dlg-siguiente');
+      await waitDialog((d) => d.pasos[0] === 'revision' && !d.revEstadoVisible && d.cifras, 'la revisión (C)');
+      await clickId('dlg-empezar');
+      const dRes = await waitDialog((d) => d.pasos[0] === 'resultado', 'el resultado (C)');
+      context.smokeTrashFails = false;
+      const { batch, copy } = copyOf(dRes.lote, wf.falla);
+      created.push(batch);
+      check('C Papelera fallida (EN DISCO): el original sigue intacto y la copia es idéntica', sameTree(before, treeSnapshot(wf.falla)) && sameTree(before, treeSnapshot(copy)), copy);
+      check('C Papelera fallida: la interfaz lo dice («No se pudo enviar a la Papelera…») y ofrece el borrado definitivo, desactivado', dRes.carpetas[0].resultado === 'original-sin-tocar' && /No se pudo enviar a la Papelera/.test(dRes.carpetas[0].detalle) && dRes.botones.borrarFallo && !dRes.botones.borrarHabilitado, [dRes.carpetas, dRes.botones]);
+      await clickId('res-borrar'); // deshabilitado: no debe pasar nada
+      await sleep(300);
+      check('C Papelera fallida (EN DISCO): sin marcar «Entiendo…» el botón no avanza y el original sigue', fs.existsSync(wf.falla) && sameTree(before, treeSnapshot(wf.falla)), null);
+      await shot('asistente-5-papelera-fallida.png');
+      await js("document.getElementById('res-entiendo').click()");
+      const en = await dialogState();
+      check('C Papelera fallida: al marcar «Entiendo que no se podrá recuperar» se activa el botón', en.botones.borrarHabilitado, en.botones);
+      await clickId('res-borrar');
+      const after = await waitDialog((d) => d.carpetas.length === 1 && d.carpetas[0].resultado === 'original-borrado-definitivamente', 'el borrado definitivo (C)');
+      check('C borrado definitivo (EN DISCO): original ausente y copia idéntica', !fs.existsSync(wf.falla) && sameTree(before, treeSnapshot(copy)), after.carpetas);
+      check('C borrado definitivo: ya no hay botón de borrar ni de quitar la copia', !after.botones.borrarFallo && !after.botones.quitar, after.botones);
+      await clickId('dlg-cerrar');
+    }
+
+    // ===== (D) Origen sin Papelera: hay que ELEGIR; borrar definitivamente exige confirmar =====
+    {
+      const before = treeSnapshot(wf.sinConfirmar);
+      await openFromMenu(wf.sinConfirmar, 'move');
+      await chooseDest();
+      await clickId('dlg-siguiente');
+      const d2 = await waitDialog((d) => d.pasos[0] === 'revision' && !d.revEstadoVisible && d.cifras, 'la revisión (D)');
+      check('D sin Papelera: aparece el bloque «¿Qué quieres hacer?», nada preseleccionado y «Empezar» desactivado', d2.papelera && !d2.preseleccion && d2.empezar.d && !d2.borrarConfirmar, [d2.papelera, d2.preseleccion, d2.empezar]);
+      await shot('asistente-2b-papelera-no-cabe.png');
+      await js("document.querySelector('input[name=\"papelera\"][value=\"borrar\"]').click()");
+      const d3 = await dialogState();
+      check('D sin Papelera: al elegir borrar aparece la confirmación en rojo con carpetas y bytes, y «Empezar» sigue desactivado', d3.borrarConfirmar && /1 carpeta .*sin pasar por la Papelera/.test(d3.borrarTexto) && d3.empezar.d && /Entiendo/.test(d3.razon), [d3.borrarTexto, d3.empezar, d3.razon]);
+      check('D sin Papelera: el diálogo con la confirmación cabe en la ventana mínima', fits(d3), d3);
+      await shot('asistente-2c-confirmar-borrado.png');
+      await clickId('dlg-empezar'); // desactivado: no avanza
+      await sleep(300);
+      const stuck = await dialogState();
+      check('D sin Papelera (EN DISCO): sin la confirmación no se avanza y el original sigue entero', stuck.pasos[0] === 'revision' && sameTree(before, treeSnapshot(wf.sinConfirmar)), stuck.pasos);
+      await clickId('dlg-cerrar').catch(() => {});
+      await realKey('Escape');
+      await sleep(200);
+      const esc = await dialogState();
+      check('D sin Papelera: Esc cierra el asistente antes de empezar', !esc.abierto, esc.abierto);
+      check('D sin Papelera (EN DISCO): cerrar sin empezar no tocó nada', sameTree(before, treeSnapshot(wf.sinConfirmar)) && fs.readdirSync(destBase).every((n) => n === 'BoneYardDog'), fs.readdirSync(destBase));
+    }
+    {
+      const before = treeSnapshot(wf.borrar);
+      await openFromMenu(wf.borrar, 'move');
+      await chooseDest();
+      await clickId('dlg-siguiente');
+      await waitDialog((d) => d.pasos[0] === 'revision' && !d.revEstadoVisible && d.papelera, 'la revisión (D2)');
+      await js("document.querySelector('input[name=\"papelera\"][value=\"borrar\"]').click()");
+      await js("document.getElementById('rev-entiendo').click()");
+      const ready = await dialogState();
+      check('D2 borrar confirmado: con «Entiendo…» marcado, «Empezar» se activa', !ready.empezar.d, ready.empezar);
+      await clickId('dlg-empezar');
+      const dRes = await waitDialog((d) => d.pasos[0] === 'resultado', 'el resultado (D2)');
+      const { batch, copy } = copyOf(dRes.lote, wf.borrar);
+      created.push(batch);
+      check('D2 borrar confirmado (EN DISCO): original ausente y copia idéntica', !fs.existsSync(wf.borrar) && sameTree(before, treeSnapshot(copy)), dRes.carpetas);
+      check('D2 borrar confirmado: la interfaz dice «borrado definitivamente» y no ofrece quitar la copia', dRes.carpetas[0].resultado === 'original-borrado-definitivamente' && !dRes.botones.quitar, [dRes.carpetas, dRes.botones]);
+      report.wizard.batchBorrar = batch;
+      await clickId('dlg-cerrar');
+    }
+    {
+      const before = treeSnapshot(wf.dejar);
+      await openFromMenu(wf.dejar, 'move');
+      await chooseDest();
+      await clickId('dlg-siguiente');
+      await waitDialog((d) => d.pasos[0] === 'revision' && !d.revEstadoVisible && d.papelera, 'la revisión (D3)');
+      await js("document.querySelector('input[name=\"papelera\"][value=\"dejar\"]').click()");
+      const ready = await dialogState();
+      check('D3 dejar el original: «Empezar» se activa sin pedir confirmación de borrado', !ready.empezar.d && !ready.borrarConfirmar, [ready.empezar, ready.borrarConfirmar]);
+      await clickId('dlg-empezar');
+      const dRes = await waitDialog((d) => d.pasos[0] === 'resultado', 'el resultado (D3)');
+      const { batch, copy } = copyOf(dRes.lote, wf.dejar);
+      created.push(batch);
+      check('D3 dejar el original (EN DISCO): el original sigue y la copia es idéntica', sameTree(before, treeSnapshot(wf.dejar)) && sameTree(before, treeSnapshot(copy)) && dRes.carpetas[0].resultado === 'copiada-verificada', dRes.carpetas);
+      await clickId('dlg-cerrar');
+    }
+
+    // ===== (E) Verificar una copia anterior (botón de la barra superior) =====
+    {
+      const batch = report.wizard.batchBorrar;
+      context.smokeBatchFolder = batch;
+      await clickId('btn-verificar-copia');
+      const d0 = await waitDialog((d) => d.abierto && d.pasos[0] === 'verificar', 'verificar una copia anterior');
+      check('E verificar anterior: «Verificar» está desactivado hasta elegir la copia', d0.verificarYa.d && /Elige primero/.test(d0.razon), [d0.verificarYa, d0.razon]);
+      await clickId('ver-elegir');
+      const d1 = await waitDialog((d) => /Copia elegida/.test(d.verElegida), 'la copia elegida');
+      check('E verificar anterior: la copia elegida se muestra', d1.verElegida.includes(path.basename(batch)) && !d1.verificarYa.d, d1.verElegida);
+      await clickId('dlg-verificar-ya');
+      const ok = await waitDialog((d) => d.verResultado !== '', 'el resultado de verificar');
+      check('E verificar anterior: copia íntegra => «La copia está bien»', /La copia está bien/.test(ok.verResultado), ok.verResultado);
+      check('E verificar anterior: el diálogo cabe en la ventana mínima', fits(ok), ok);
+      await shot('asistente-6-verificar-anterior.png');
+      // Se altera la copia a propósito: un byte cambiado, un archivo borrado y uno sobrante.
+      const files = [];
+      (function walkFiles(dir) {
+        for (const n of fs.readdirSync(dir)) {
+          const f = path.join(dir, n);
+          if (fs.statSync(f).isDirectory()) walkFiles(f);
+          else if (!['ESTADO.json', 'MANIFIESTO.json', 'LEEME.txt'].includes(n)) files.push(f);
+        }
+      })(batch);
+      const bytes = fs.readFileSync(files[0]);
+      bytes[0] ^= 0xff;
+      fs.writeFileSync(files[0], bytes);
+      fs.unlinkSync(files[1]);
+      fs.writeFileSync(path.join(path.dirname(files[2]), 'sobrante.bin'), 'x');
+      await clickId('dlg-verificar-ya');
+      const bad = await waitDialog((d) => /problemas/.test(d.verResultado), 'la verificación con problemas');
+      check('E verificar anterior (copia alterada): detecta el problema (alterado, faltante y sobrante)', /La copia tiene 3 problemas/.test(bad.verResultado), bad.verResultado);
+      await clickId('dlg-cerrar');
+    }
+
+    // ===== limpieza de lo que creó esta prueba =====
+    for (const d of created) {
+      try {
+        fs.rmSync(d, { recursive: true, force: true });
+      } catch {
+        /* limpieza best-effort */
+      }
+    }
+    report.wizard.capturas = shots;
+    check('asistente: se guardaron las capturas de cada paso', ['asistente-1-destino.png', 'asistente-2-revision.png', 'asistente-4-resultado.png', 'asistente-2b-papelera-no-cabe.png'].every((n) => shots.includes(n)), shots);
+    context.smokeDestination = null;
+    win.setSize(1100, 1000);
+  }
+
   (async () => {
     try {
       check('las carpetas de ejemplo no están en una ruta protegida', !isProtectedPath(fixture.root), fixture.root);
@@ -406,7 +766,7 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
       }
 
       // --- Inicio ----------------------------------------------------------------
-      check('inicio: aviso "solo analiza" y botón "Elegir carpeta…"', home.avisoSolo.includes('solo analiza. No borra ni mueve nada') && home.botonElegir === 'Elegir carpeta…', [home.avisoSolo, home.botonElegir]);
+      check('inicio: aviso "Prueba primero con datos de prueba…" y botón "Elegir carpeta…"', home.avisoSolo.includes('Prueba primero con datos de prueba, nunca con datos que no tengas respaldados') && home.botonElegir === 'Elegir carpeta…', [home.avisoSolo, home.botonElegir]);
       const wantDrives = process.platform === 'win32';
       check(
         'inicio: botones de unidades ("Escanear C:", …)',
@@ -491,7 +851,7 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
       const selOne = await waitFor((s) => s.seleccion.visible && s.seleccion.cantidad === 1 && s.seleccion.bytes === 6000, 'selección de vacaciones');
       check('Ctrl+clic marca la carpeta (✓) sin entrar y la barra suma su tamaño', cellOf(selOne, P.vacaciones).seleccionada && selOne.mapa.carpeta === P.videos && /1 carpeta seleccionada · /.test(selOne.seleccion.texto), selOne.seleccion);
       check('con la barra de selección, la leyenda y el mapa siguen a la vista y no se tapan', selOne.vista.barra && selOne.vista.barra.bottom <= selOne.vista.alto && selOne.vista.leyenda.bottom <= selOne.vista.barra.top + 1 && selOne.vista.contenedor.bottom <= selOne.vista.leyenda.top + 1, selOne.vista);
-      check('barra de selección: "Copiar…" y "Transferir…" desactivados con "Disponible en la próxima versión"', selOne.seleccion.copiarDeshabilitado && selOne.seleccion.transferirDeshabilitado && selOne.seleccion.proxima === 'Disponible en la próxima versión', selOne.seleccion);
+      check('barra de selección: "Copiar…" y "Transferir…" activos', !selOne.seleccion.copiarDeshabilitado && !selOne.seleccion.transferirDeshabilitado, selOne.seleccion);
 
       await js(`document.querySelector('#migas button').click()`);
       const back = await settled((s) => s.mapa.carpeta === fixture.root && s.mapa.celdas.length > 0, 'volver a la raíz con las migas');
@@ -527,7 +887,6 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
       check('la barra de selección se mantiene al cambiar de pestaña', toList.seleccion.visible && toList.seleccion.cantidad === 3, toList.seleccion);
       if (fixture.hasLink) check('lista: la carpeta con enlace se ofrece, con aviso', L.items.find((i) => i.nombre === 'Con enlace').enlaces, L.items.map((i) => [i.nombre, i.enlaces]));
       else report.skippedChecks = [...(report.skippedChecks || []), 'aviso de enlaces (no se pudo crear un enlace simbólico aquí)'];
-      check('lista: botón "Mover a disco externo…" desactivado con su explicación', L.moverDeshabilitado && L.moverTexto === 'Mover a disco externo…' && L.moverAyuda === 'Disponible en la próxima versión', L);
       check('lista: sin aviso de omitidos por permisos', !L.omitidosVisible || fixture.hasLink, L.omitidosVisible);
       await snapshot('lista.png');
 
@@ -549,7 +908,7 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
       const labels = menu.menu.items.filter((i) => !i.separador).map((i) => i.texto);
       check('clic derecho abre el menú con los 6 elementos esperados', JSON.stringify(labels) === JSON.stringify(['Entrar a la carpeta', 'Mostrar en el Explorador', 'Ver detalles', 'Copiar a otro disco…', 'Transferir a otro disco (mover)…', 'Ignorar esta carpeta']) && menu.menu.items.filter((i) => i.separador).length === 2, menu.menu.items);
       const byAction = Object.fromEntries(menu.menu.items.filter((i) => !i.separador).map((i) => [i.accion, i]));
-      check('"Copiar" y "Transferir" están desactivados con "Disponible en la próxima versión"; el resto activos', byAction.copy.deshabilitado && byAction.move.deshabilitado && byAction.copy.motivo === 'Disponible en la próxima versión' && byAction.move.motivo === 'Disponible en la próxima versión' && !byAction.enter.deshabilitado && !byAction.reveal.deshabilitado && !byAction.details.deshabilitado && !byAction.ignore.deshabilitado, byAction);
+      check('"Copiar" y "Transferir" están activos (como el resto)', !byAction.copy.deshabilitado && !byAction.move.deshabilitado && !byAction.enter.deshabilitado && !byAction.reveal.deshabilitado && !byAction.details.deshabilitado && !byAction.ignore.deshabilitado, byAction);
       check('el foco queda en el primer elemento del menú', menu.menu.foco === 'enter', menu.menu.foco);
 
       await realKey('Down');
@@ -666,6 +1025,8 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
       check('la carpeta 501 se rechaza con "Máximo 500 carpetas por operación"', /Máximo 500 carpetas por operación/.test(over.mensaje), over.mensaje);
       check('la selección NO se pierde: sigue visible con 500 carpetas', over.seleccion.visible && over.seleccion.cantidad === 500 && over.seleccion.bytes === 500000, over.seleccion);
       check('la carpeta 501 no quedó marcada', !cellOf(over, path.join(manyRoot, 'Reciente1')).seleccionada, null);
+
+      await wizardScenarios();
 
       const finalSettings = savedSettings();
       check('settings.json con el esquema esperado', finalSettings.version === 1 && finalSettings.staleDays === 90 && finalSettings.minSizeBytes === 1000 && finalSettings.mapMinBytes === 1000, finalSettings);

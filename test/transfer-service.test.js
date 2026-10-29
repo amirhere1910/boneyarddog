@@ -60,13 +60,10 @@ test('servicio: la Papelera se atiende desde el otro hilo (trash inyectada) y el
   const dest = makeDest(base);
   const before = snapshot(src);
   const { svc, trashed } = newService(t);
-  // En Linux el worker no conoce el tipo de disco: el veredicto es "desconocido", así que hay que aceptar el riesgo.
-  const pf = await svc.preflight({ sources: [src], destinationRoot: dest, mode: 'move', verify: 'full', disposal: 'papelera' });
-  // Fuera de Windows el worker no puede saber el tipo de disco ("desconocido"): sin aceptar el riesgo se rechaza.
-  // En Windows sí lo sabe (NTFS fijo) y una carpeta pequeña "probablemente cabe".
-  if (process.platform !== 'win32') assert.ok(pf.blockers.some((b) => b.code === 'papelera-no-recomendada'), 'sin aceptar el riesgo se rechaza');
-  const pf2 = await svc.preflight({ sources: [src], destinationRoot: dest, mode: 'move', verify: 'full', disposal: 'papelera', acceptRecycleRisk: true });
+  const pf2 = await svc.preflight({ sources: [src], destinationRoot: dest, mode: 'move', verify: 'full', disposal: 'papelera' });
+  // Fuera de Windows el worker no sabe el tipo de disco: es un aviso (no un impedimento) y la operación sigue.
   assert.deepEqual(pf2.blockers, []);
+  if (process.platform !== 'win32') assert.ok(pf2.warnings.some((w) => w.code === 'papelera-desconocida'));
   const r = await svc.run(pf2.planId);
   assert.equal(r.carpetas[0].resultado, 'original-enviado-a-papelera');
   assert.deepEqual(trashed, [src]);
@@ -84,7 +81,7 @@ test('servicio: si la Papelera falla, el original queda y se informa', async (t)
       throw new Error('Papelera no disponible');
     },
   });
-  const pf = await svc.preflight({ sources: [src], destinationRoot: dest, mode: 'move', verify: 'full', disposal: 'papelera', acceptRecycleRisk: true });
+  const pf = await svc.preflight({ sources: [src], destinationRoot: dest, mode: 'move', verify: 'full', disposal: 'papelera' });
   const r = await svc.run(pf.planId);
   assert.equal(r.carpetas[0].resultado, 'original-sin-tocar');
   assert.match(r.carpetas[0].motivo, /Papelera no disponible/);
@@ -96,7 +93,7 @@ test('servicio: sin función de Papelera, "papelera" es un impedimento', async (
   const src = makeSource(base);
   const svc = new TransferService();
   t.after(() => svc.close());
-  const pf = await svc.preflight({ sources: [src], destinationRoot: makeDest(base), mode: 'move', verify: 'full', disposal: 'papelera', acceptRecycleRisk: true });
+  const pf = await svc.preflight({ sources: [src], destinationRoot: makeDest(base), mode: 'move', verify: 'full', disposal: 'papelera' });
   assert.ok(pf.blockers.some((b) => b.code === 'sin-funcion-papelera'));
 });
 
@@ -107,7 +104,7 @@ test('servicio: una sola operación a la vez y cancelación a mitad (originales 
   const before = snapshot(src);
   // Avisos de progreso sin límite de frecuencia: en una máquina rápida la copia podría terminar antes del primer aviso del archivo grande.
   const { svc, trashed } = newService(t, { progressIntervalMs: 0 });
-  const pf = await svc.preflight({ sources: [src], destinationRoot: dest, mode: 'move', verify: 'full', disposal: 'papelera', acceptRecycleRisk: true });
+  const pf = await svc.preflight({ sources: [src], destinationRoot: dest, mode: 'move', verify: 'full', disposal: 'papelera' });
   const events = [];
   let cancelSent = false;
   svc.on('progress', (e) => {
@@ -186,4 +183,51 @@ test('servicio: método desconocido y argumentos raros no cuelgan nada', async (
   const pf = await svc.preflight(null);
   assert.ok(pf.blockers.length > 0);
   await assert.rejects(() => svc.verifyBatch(7), /no válida/);
+});
+
+test('servicio: eliminarDefinitivamente (tras una Papelera que falló) pide confirmación, valida índices y borra', async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const dest = makeDest(base);
+  const before = snapshot(src);
+  const { svc } = newService(t, {
+    trash: async () => {
+      throw new Error('Windows rechazó la Papelera');
+    },
+  });
+  const pf = await svc.preflight({ sources: [src], destinationRoot: dest, mode: 'move', verify: 'full', disposal: 'papelera' });
+  assert.deepEqual(pf.blockers, []);
+  assert.equal(pf.plan.confirmPermanentDelete, false);
+  const r = await svc.run(pf.planId);
+  assert.equal(r.carpetas[0].resultado, 'original-sin-tocar');
+  assert.equal(r.carpetas[0].motivoCodigo, 'papelera-fallo');
+  assert.match(r.carpetas[0].motivo, /Windows rechazó la Papelera/);
+  await assert.rejects(() => svc.eliminarDefinitivamente(r.runId, [0], false), /confirmación/);
+  await assert.rejects(() => svc.eliminarDefinitivamente(r.runId, [0], 'true'), /confirmación/);
+  await assert.rejects(() => svc.eliminarDefinitivamente(r.runId, [3], true), /índice/);
+  await assert.rejects(() => svc.eliminarDefinitivamente('desconocido', [0], true), { code: 'RESULTADO_DESCONOCIDO' });
+  assert.deepEqual(snapshot(src), before, 'nada se borró con peticiones inválidas');
+  const out = await svc.eliminarDefinitivamente(r.runId, [0], true);
+  assert.equal(out.resumen.carpetas[0].resultado, 'original-borrado-definitivamente');
+  assert.equal(fs.existsSync(src), false);
+  assert.deepEqual(snapshot(out.resumen.carpetas[0].destino), before);
+  await assert.rejects(() => svc.eliminarDefinitivamente(r.runId, [0], true), /no se puede borrar así/);
+  await assert.rejects(() => svc.quitarCopiado(r.runId), /ya se retiró/);
+});
+
+test('servicio: transferencia con borrado definitivo explícito (confirmPermanentDelete) y el resumen no filtra el plan', async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const dest = makeDest(base);
+  const { svc, trashed } = newService(t);
+  const sin = await svc.preflight({ sources: [src], destinationRoot: dest, mode: 'move', verify: 'full', disposal: 'borrar' });
+  assert.equal(sin.planId, null);
+  assert.ok(sin.blockers.some((b) => b.code === 'borrado-sin-confirmar'));
+  const pf = await svc.preflight({ sources: [src], destinationRoot: dest, mode: 'move', verify: 'full', disposal: 'borrar', confirmPermanentDelete: true });
+  assert.equal(pf.plan.confirmPermanentDelete, true);
+  assert.equal(pf.plan.sources[0].entries, undefined);
+  const r = await svc.run(pf.planId);
+  assert.equal(r.carpetas[0].resultado, 'original-borrado-definitivamente');
+  assert.deepEqual(trashed, []);
+  assert.equal(fs.existsSync(src), false);
 });
