@@ -43,6 +43,6 @@ test('código fuente: nada se vuelve a escanear solo y el renderer no manda ruta
   // Solo: definición, clics (vía addEventListener sin paréntesis) y la tecla F5.
   assert.ok(calls <= 3, `rescan() se llama ${calls} veces`);
   const from = app.indexOf('function onOriginalsRemoved');
-  const onRemoved = app.slice(from, app.indexOf('\n  }\n', from));
+  const onRemoved = app.slice(from, from + app.slice(from).search(/\r?\n  \}\r?\n/));
   assert.doesNotMatch(onRemoved, /(?<![A-Za-z])(rescan|scan)\(|startScan/);
 });
