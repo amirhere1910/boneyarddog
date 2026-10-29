@@ -22,7 +22,7 @@
 
 const nodePath = require('node:path');
 const crypto = require('node:crypto');
-const { isProtectedPath } = require('./protected');
+const { isProtectedPath, isProtectedDestination, describeProtectedDestination, describeProtectedSource } = require('./protected');
 const { unknownVolume } = require('./volume');
 const R = require('./transfer-rules');
 
@@ -119,6 +119,12 @@ function createTransferEngine(deps = {}) {
   const trash = deps.trash || null;
   const now = deps.now || (() => Date.now());
   const isProtected = deps.isProtected || isProtectedPath;
+  // El destino se juzga con reglas propias: la RAÍZ de una unidad (E:\) sí sirve; solo se bloquea la del sistema.
+  const isProtectedDest = deps.isProtectedDestination || (deps.isProtected ? deps.isProtected : (p) => isProtectedDestination(p, { env: deps.env || process.env }));
+  const explainDest = (p, real) => {
+    const why = describeProtectedDestination(p, { env: deps.env || process.env }) || (real ? describeProtectedDestination(real, { env: deps.env || process.env }) : null);
+    return why || `«${real || p}» es una ruta protegida del sistema: elige otra carpeta.`;
+  };
   const env = deps.env || process.env;
   const appVersion = deps.appVersion || '0.0.0';
 
@@ -423,9 +429,9 @@ function createTransferEngine(deps = {}) {
 
     // Origen protegido: se vuelve a comprobar AHORA (no solo al listar), con la ruta dada Y la real.
     givenList.forEach((g, i) => {
-      if (isProtected(g)) block('origen-protegido', `«${g}» está protegido por el sistema y no se puede copiar ni mover.`, { ruta: g });
+      if (isProtected(g)) block('origen-protegido', describeProtectedSource(g) || `«${g}» está protegido y no se puede copiar ni mover.`, { ruta: g });
       else if (!same(effList[i], g) && isProtected(effList[i])) {
-        block('origen-protegido', `«${g}» pasa por un enlace y en realidad es «${effList[i]}», que está protegido por el sistema: no se puede copiar ni mover.`, { ruta: g, rutaReal: effList[i] });
+        block('origen-protegido', `«${g}» pasa por un enlace y en realidad es «${effList[i]}». ${describeProtectedSource(effList[i]) || 'Esa ruta está protegida.'}`, { ruta: g, rutaReal: effList[i] });
       }
     });
     // Orígenes repetidos o anidados (por ruta real).
@@ -436,9 +442,9 @@ function createTransferEngine(deps = {}) {
         }
       }
     }
-    if (isProtected(destinationRoot)) block('destino-protegido', 'El destino está en una carpeta protegida del sistema.', { ruta: destinationRoot });
-    else if (destReal && !same(destReal, destinationRoot) && isProtected(destReal)) {
-      block('destino-protegido', `El destino pasa por un enlace y en realidad es «${destReal}», una carpeta protegida del sistema.`, { ruta: destinationRoot, rutaReal: destReal });
+    if (isProtectedDest(destinationRoot)) block('destino-protegido', explainDest(destinationRoot), { ruta: destinationRoot });
+    else if (destReal && !same(destReal, destinationRoot) && isProtectedDest(destReal)) {
+      block('destino-protegido', `«${destinationRoot}» pasa por un enlace y en realidad es «${destReal}». ${explainDest(destReal)}`, { ruta: destinationRoot, rutaReal: destReal });
     }
     givenList.forEach((g, i) => {
       if (R.isInside(destinationRoot, g) || R.isInside(destEff, effList[i])) {

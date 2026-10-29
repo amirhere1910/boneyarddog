@@ -272,3 +272,52 @@ test('BoneYardDog-Cuarentena está protegida en la raíz de cualquier unidad (co
   // Solo en la raíz: una carpeta con ese nombre más adentro, o con prefijo parecido, no.
   check(['D:\\Datos\\BoneYardDog-Cuarentena', 'D:\\BoneYardDog-Cuarentena2', 'D:\\BoneYardDog', 'D:\\BoneYardDog\\2026-10-27_1405'], false);
 });
+
+// ============================================== destinos: la raíz de una unidad SÍ sirve (Fase 5)
+
+const { isProtectedDestination, describeProtectedDestination, describeProtectedSource, systemDriveOf } = require('../src/core/protected');
+const ENV = { SystemDrive: 'C:' };
+
+test('isProtectedDestination: la raíz de una unidad que no es la del sistema y sus carpetas SÍ sirven', () => {
+  for (const ok of ['E:\\', 'e:/', 'E:\\Copias', 'E:\\Copias\\Fotos', 'D:\\', 'D:\\Respaldo ñ 🐕', 'C:\\Copias', 'C:\\Users\\amir\\Documents\\Respaldo', 'C:\\Users\\amir\\Desktop', '\\\\?\\E:\\']) {
+    assert.equal(isProtectedDestination(ok, { env: ENV }), false, ok);
+  }
+});
+
+test('isProtectedDestination: sigue bloqueado el sistema, C:\\ (la unidad del sistema), C:\\Users, la carpeta de usuario y AppData', () => {
+  for (const bad of ['C:\\', 'c:/', 'C:', 'C:\\Windows', 'C:\\Windows\\x', 'C:\\Windows\\System32', 'C:\\Program Files\\x', 'C:\\Program Files (x86)', 'C:\\ProgramData', 'D:\\$Recycle.Bin', 'E:\\System Volume Information', 'E:\\Recovery', 'C:\\Users', 'C:\\Users\\amir', 'C:\\Users\\amir\\AppData\\Local\\Temp', 'C:\\Users\\amir\\.ssh', 'D:\\BoneYardDog-Cuarentena', 'relativa', '', null, undefined, 'C:\\Temp\\..\\Windows']) {
+    assert.equal(isProtectedDestination(bad, { env: ENV }), true, String(bad));
+  }
+});
+
+test('isProtectedDestination: la «unidad del sistema» sale de SystemDrive o de windir; sin datos, C:', () => {
+  assert.equal(systemDriveOf({ SystemDrive: 'D:' }), 'D:');
+  assert.equal(systemDriveOf({ windir: 'e:\\Windows' }), 'E:');
+  assert.equal(systemDriveOf({ SystemRoot: 'F:\\WINDOWS' }), 'F:');
+  assert.equal(systemDriveOf({}), 'C:');
+  assert.equal(isProtectedDestination('D:\\', { env: { SystemDrive: 'D:' } }), true, 'si el sistema está en D:, D:\\ es la protegida');
+  assert.equal(isProtectedDestination('C:\\', { env: { SystemDrive: 'D:' } }), false);
+});
+
+test('la raíz de una unidad sigue protegida como ORIGEN', () => {
+  for (const root of ['C:\\', 'E:\\', 'e:/']) assert.equal(isProtectedPath(root), true, root);
+});
+
+test('los mensajes nombran la ruta y la razón concreta (no «carpeta protegida del sistema» a secas)', () => {
+  const must = (p, re) => {
+    const m = describeProtectedDestination(p, { env: ENV });
+    assert.match(m, re, p);
+    assert.doesNotMatch(m, /carpeta protegida del sistema\.?$/);
+    return m;
+  };
+  must('C:\\', /C:\\ es el disco del sistema.*otra unidad/);
+  must('C:\\Windows\\x', /«C:\\Windows\\x» está dentro de «Windows»/);
+  must('C:\\Users\\amir', /«C:\\Users\\amir» es la carpeta personal de un usuario/);
+  must('C:\\Users', /C:\\Users, donde Windows guarda/);
+  must('C:\\Users\\amir\\AppData\\Roaming', /AppData/);
+  must('D:\\$Recycle.Bin\\x', /«\$Recycle\.Bin»/);
+  assert.equal(describeProtectedDestination('E:\\', { env: ENV }), null);
+  assert.match(describeProtectedSource('E:\\'), /unidad completa/);
+  assert.match(describeProtectedSource('C:\\Windows\\Fonts'), /«C:\\Windows\\Fonts» está dentro de «windows»/);
+  assert.equal(describeProtectedSource('D:\\Fotos'), null);
+});

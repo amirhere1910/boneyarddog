@@ -1662,3 +1662,41 @@ test('rutas reales: ANTES de retirar se vuelve a resolver la ruta real; si un en
   assert.deepEqual(trashed, [], 'la Papelera ni se llamó');
   assert.ok(fs.existsSync(respaldo));
 });
+
+// ====================================== destino: la raíz de una unidad es válida (Fase 5, Parte 1)
+
+test('destino: la raíz de una unidad y sus carpetas valen; C:\\ (sistema), Windows, Users, usuario y $Recycle.Bin se bloquean con un mensaje que dice por qué', async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const dest = makeDest(base);
+  const sys = { SystemDrive: 'C:' };
+  // Con las reglas reales y rutas de otra unidad: el motor solo bloquea lo que corresponde.
+  const { engine } = makeEngine(base, { env: sys, isProtected: undefined });
+  for (const bad of ['C:\\', 'C:\\Windows\\x', 'C:\\Users\\amir', 'D:\\$Recycle.Bin']) {
+    const pf = await engine.preflight(copyOpts(src, bad));
+    const b = pf.blockers.find((x) => x.code === 'destino-protegido');
+    assert.ok(b, bad);
+    assert.ok(b.message.includes(bad.replace(/\\$/, '')) || b.message.startsWith('C:\\'), `${bad}: ${b.message}`);
+    assert.doesNotMatch(b.message, /^El destino está en una carpeta protegida del sistema\.$/);
+    assert.equal(pf.plan, null);
+  }
+  // La raíz (simulada con la carpeta de pruebas como «unidad») y subcarpetas no se bloquean por protección.
+  const protectedOnlyC = makeEngine(base, { env: sys, isProtectedDestination: (p) => /^C:\\/i.test(p) && !/^C:\\Copias/i.test(p) });
+  const pf = await protectedOnlyC.engine.preflight(copyOpts(src, dest));
+  assert.ok(!codes(pf.blockers).includes('destino-protegido'));
+});
+
+test('destino: un enlace hacia una zona protegida se bloquea con la ruta real en el mensaje', async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const prot = path.join(base, 'zona-protegida');
+  fs.mkdirSync(prot);
+  const enlace = path.join(base, 'atajo');
+  if (!linkOrSkip(t, prot, enlace)) return;
+  const { engine } = makeEngine(base, { isProtectedDestination: (p) => p === prot || p.startsWith(prot + path.sep) });
+  const pf = await engine.preflight(copyOpts(src, enlace));
+  const b = pf.blockers.find((x) => x.code === 'destino-protegido');
+  assert.ok(b);
+  assert.equal(b.rutaReal, prot);
+  assert.ok(b.message.includes(enlace) && b.message.includes(prot), b.message);
+});

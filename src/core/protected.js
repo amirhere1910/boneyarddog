@@ -83,22 +83,19 @@ function stripExtendedPrefix(p) {
 }
 
 /**
- * @param {string} inputPath
- * @param {object} [options]
- * @param {boolean} [options.allowAppData=false] Si es true, AppData deja de estar protegida.
- * @returns {boolean} true si la ruta (o algo que la contenga hacia arriba, ver
- *   reglas arriba) está protegida.
+ * Clasifica una ruta: ¿está protegida y POR QUÉ? Es la única fuente de las reglas: `isProtectedPath` (orígenes) y
+ * `isProtectedDestination` (destinos) la usan las dos.
+ * @returns {{protected: boolean, cause: string|null, name?: string, drive?: string}}
+ *   causa: 'invalida' | 'relativa' | 'raiz' | 'sistema' | 'corto' | 'usuarios' | 'usuario' | 'appdata' | 'credenciales' | 'perfil' | null
  */
-function isProtectedPath(inputPath, { allowAppData = false } = {}) {
-  if (typeof inputPath !== 'string' || inputPath.trim() === '' || inputPath.includes('\0')) {
-    return true;
-  }
+function classifyPath(inputPath, { allowAppData = false } = {}) {
+  if (typeof inputPath !== 'string' || inputPath.trim() === '' || inputPath.includes('\0')) return { protected: true, cause: 'invalida' };
   const p = stripExtendedPrefix(inputPath);
 
   const { root } = path.win32.parse(p);
-  if (root === '') return true; // relativa: no se puede saber
-  if (/^[a-zA-Z]:$/.test(root)) return true; // relativa a la unidad ("C:foo")
-  if (/^[\\/]{2}/.test(root)) return false; // ruta de red (UNC), fuera de alcance
+  if (root === '') return { protected: true, cause: 'relativa' }; // relativa: no se puede saber
+  if (/^[a-zA-Z]:$/.test(root)) return { protected: true, cause: 'relativa' }; // relativa a la unidad ("C:foo")
+  if (/^[\\/]{2}/.test(root)) return { protected: false, cause: null }; // ruta de red (UNC), fuera de alcance
 
   const parts = [];
   for (const raw of p.slice(root.length).split(/[\\/]+/)) {
@@ -113,18 +110,108 @@ function isProtectedPath(inputPath, { allowAppData = false } = {}) {
     parts.push(name.toLowerCase());
   }
 
-  if (parts.length === 0) return true; // raíz de la unidad
+  const drive = `${root[0].toUpperCase()}:`;
+  if (parts.length === 0) return { protected: true, cause: 'raiz', drive }; // raíz de la unidad
   const [first] = parts;
-  if (PROTECTED_TOP_LEVEL.has(first)) return true;
-  if (SHORT_NAME_83.test(first)) return true;
+  if (PROTECTED_TOP_LEVEL.has(first)) return { protected: true, cause: 'sistema', name: first, drive };
+  if (SHORT_NAME_83.test(first)) return { protected: true, cause: 'corto', name: first, drive };
   if (first === 'users') {
-    if (parts.length <= 2) return true; // C:\Users y C:\Users\<nombre>
+    if (parts.length === 1) return { protected: true, cause: 'usuarios', drive };
+    if (parts.length === 2) return { protected: true, cause: 'usuario', name: parts[1], drive };
     const inHome = parts[2];
-    if (inHome === 'appdata') return !allowAppData;
-    if (PROTECTED_IN_USER_HOME.has(inHome)) return true;
-    if (parts.length === 3 && (inHome.startsWith('ntuser.dat') || inHome === 'ntuser.ini')) return true;
+    if (inHome === 'appdata') return allowAppData ? { protected: false, cause: null } : { protected: true, cause: 'appdata', drive };
+    if (PROTECTED_IN_USER_HOME.has(inHome)) return { protected: true, cause: 'credenciales', name: inHome, drive };
+    if (parts.length === 3 && (inHome.startsWith('ntuser.dat') || inHome === 'ntuser.ini')) return { protected: true, cause: 'perfil', drive };
   }
-  return false;
+  return { protected: false, cause: null };
 }
 
-module.exports = { isProtectedPath };
+/**
+ * @param {string} inputPath
+ * @param {object} [options]
+ * @param {boolean} [options.allowAppData=false] Si es true, AppData deja de estar protegida.
+ * @returns {boolean} true si la ruta (o algo que la contenga hacia arriba, ver
+ *   reglas arriba) está protegida.
+ */
+function isProtectedPath(inputPath, options = {}) {
+  return classifyPath(inputPath, options).protected;
+}
+
+/** Letra de la unidad del sistema («C:»), por SystemDrive o por windir. Sin dato: «C:». */
+function systemDriveOf(env = process.env) {
+  const fromVar = typeof env.SystemDrive === 'string' && /^[a-zA-Z]:/.test(env.SystemDrive) ? env.SystemDrive.slice(0, 2) : null;
+  const fromWindir = typeof env.windir === 'string' && /^[a-zA-Z]:/.test(env.windir) ? env.windir.slice(0, 2) : typeof env.SystemRoot === 'string' && /^[a-zA-Z]:/.test(env.SystemRoot) ? env.SystemRoot.slice(0, 2) : null;
+  return (fromVar || fromWindir || 'C:').toUpperCase();
+}
+
+/**
+ * ¿Esta ruta está protegida COMO DESTINO de una copia? Mismas reglas que los orígenes salvo que la RAÍZ de una unidad
+ * (E:\) es un destino válido: solo se bloquea la raíz de la unidad del SISTEMA. Sigue bloqueado: Windows, Archivos de
+ * programa, ProgramData, $Recycle.Bin, System Volume Information…, `C:\Users`, `C:\Users\<nombre>` y AppData.
+ */
+function isProtectedDestination(inputPath, { env = process.env, allowAppData = false } = {}) {
+  const c = classifyPath(inputPath, { allowAppData });
+  if (!c.protected) return false;
+  if (c.cause === 'raiz') return c.drive === systemDriveOf(env);
+  return true;
+}
+
+/**
+ * Explica en llano por qué una ruta no sirve como destino (nombra SIEMPRE la ruta y la razón concreta).
+ * Devuelve null si sirve.
+ */
+function describeProtectedDestination(inputPath, { env = process.env, allowAppData = false } = {}) {
+  if (!isProtectedDestination(inputPath, { env, allowAppData })) return null;
+  const shown = typeof inputPath === 'string' ? inputPath : String(inputPath);
+  const c = classifyPath(inputPath, { allowAppData });
+  switch (c.cause) {
+    case 'raiz':
+      return `${c.drive}\\ es el disco del sistema (donde está Windows): elige una carpeta de otra unidad, o una carpeta tuya dentro de este disco (por ejemplo, dentro de Documentos).`;
+    case 'sistema':
+      return `«${shown}» está dentro de «${c.name.replace(/\b\w/g, (m) => m.toUpperCase())}», una carpeta del sistema de Windows: elige otra unidad o una carpeta tuya (Documentos, Escritorio…).`;
+    case 'usuarios':
+      return `«${shown}» es la carpeta C:\\Users, donde Windows guarda a todos los usuarios: elige una carpeta dentro de tus Documentos o de otro disco.`;
+    case 'usuario':
+      return `«${shown}» es la carpeta personal de un usuario de Windows: elige una carpeta dentro de ella (Documentos, Escritorio…) o de otra unidad.`;
+    case 'appdata':
+      return `«${shown}» está dentro de AppData, donde los programas guardan su configuración: elige otra carpeta (Documentos, otra unidad…).`;
+    case 'credenciales':
+      return `«${shown}» guarda claves o credenciales (${c.name}): elige otra carpeta.`;
+    case 'perfil':
+      return `«${shown}» es parte del perfil de usuario de Windows: elige otra carpeta.`;
+    case 'corto':
+      return `«${shown}» usa un nombre corto de Windows (8.3) que no se puede comprobar: escribe la ruta con su nombre completo o elige otra.`;
+    case 'relativa':
+      return `«${shown}» no es una ruta completa (falta la letra de la unidad): elige la carpeta con el selector.`;
+    default:
+      return `«${shown}» no es una ruta válida como destino.`;
+  }
+}
+
+/** Explica en llano por qué una ruta no se puede usar como ORIGEN (copiar o transferir). null si sirve. */
+function describeProtectedSource(inputPath, { allowAppData = false } = {}) {
+  const c = classifyPath(inputPath, { allowAppData });
+  if (!c.protected) return null;
+  const shown = typeof inputPath === 'string' ? inputPath : String(inputPath);
+  switch (c.cause) {
+    case 'raiz':
+      return `«${shown}» es una unidad completa: elige una carpeta de dentro (copiar un disco entero no está permitido).`;
+    case 'sistema':
+      return `«${shown}» está dentro de «${c.name}», una carpeta del sistema de Windows: no se puede copiar ni mover.`;
+    case 'usuarios':
+    case 'usuario':
+      return `«${shown}» es una carpeta de usuario de Windows en sí: elige una carpeta de dentro (Documentos, Escritorio…).`;
+    case 'appdata':
+      return `«${shown}» está dentro de AppData, donde los programas guardan su configuración: no se puede copiar ni mover.`;
+    case 'credenciales':
+      return `«${shown}» guarda claves o credenciales (${c.name}): no se puede copiar ni mover.`;
+    case 'perfil':
+      return `«${shown}» es parte del perfil de usuario de Windows: no se puede copiar ni mover.`;
+    case 'corto':
+      return `«${shown}» usa un nombre corto de Windows (8.3) que no se puede comprobar: usa el nombre completo.`;
+    default:
+      return `«${shown}» no es una ruta completa válida: elige la carpeta con el selector.`;
+  }
+}
+
+module.exports = { isProtectedPath, isProtectedDestination, describeProtectedDestination, describeProtectedSource, classifyPath, systemDriveOf };
