@@ -47,7 +47,7 @@ El programa **no está firmado** (no hay certificado de firma de código), así 
 2. Elige tu USB en la lista (verás letra, tipo, formato y espacio libre) → **Siguiente**.
 3. Lee la revisión previa → **Empezar**. Espera al resultado.
 
-**Debes ver:** «Listo: 1 carpeta copiada y verificada». En el USB: `BoneYardDog\<fecha>\…` con tu carpeta, `ESTADO.json`, `MANIFIESTO.json` y `LEEME.txt`. La carpeta original **sigue** en Documentos. Si el USB es FAT32 verás una línea sobre los 4 GB.
+**Debes ver:** «Listo: 1 carpeta copiada y verificada». En el USB: **tu carpeta tal cual** (`E:\<nombre de la carpeta>`), sin carpetas de fecha ni archivos extra de BoneYardDog. La línea «Se guardará en:» del paso 1 te lo anunció. La carpeta original **sigue** en Documentos. Si el USB es FAT32 verás una línea sobre los 4 GB. Si elegiste la **raíz del USB** (por ejemplo `E:\`) como destino, tiene que aceptarla (la única raíz bloqueada es la de la unidad de Windows).
 
 ### 7. Transferir con la Papelera
 1. Clic derecho en **otra** carpeta (por ejemplo «Música y canciones ñandú») → **Transferir a otro disco (mover)…** → tu USB → **Siguiente** → **Empezar**.
@@ -55,11 +55,22 @@ El programa **no está firmado** (no hay certificado de firma de código), así 
 
 **Debes ver:** «Copiada y verificada · original enviado a la Papelera». La carpeta ya no está en Documentos; sí está en la Papelera (se puede restaurar) y en el USB. En el mapa queda marcada «ya transferida». **No** aparece «Quitar la copia» (la copia es lo único que queda). Si sale la pregunta «Esto probablemente no cabe en la Papelera…», elige «Dejar el original (solo copiar)».
 
-### 8. Verificar una copia anterior (con el USB expulsado y reconectado)
+### 8. Copias anteriores (con el USB expulsado y reconectado)
 1. **Expulsa** el USB (icono de la barra de tareas → «Expulsar») y quítalo. Vuelve a conectarlo.
-2. En la barra superior: **Verificar una copia anterior…** → «Elegir la carpeta de la copia…» → entra en `BoneYardDog` del USB y elige la carpeta con la fecha → **Verificar**.
+2. En la barra lateral: **Copias anteriores** → elige tu copia en la lista (BoneYardDog la recuerda en tu PC, no en el USB) → **Verificar**.
 
-**Debes ver:** «La copia está bien: N archivos verificados». *(Opcional: cambia una letra de un archivo de texto de la copia, borra otro y vuelve a verificar: debe decir «La copia tiene 2 problemas».)*
+**Debes ver:** «La copia está bien: N archivos verificados» (con N mayor que 0; si dijera «0 archivos» es un error). *(Opcional: cambia una letra de un archivo de texto de la copia, borra otro y vuelve a verificar: debe decir «La copia tiene 2 problemas».)*
+
+### 8b. Casos que antes fallaban (haz estos cuatro)
+1. **Raíz como destino:** copia una carpeta pequeña eligiendo `E:\` (la raíz del USB). Debe funcionar; en cambio `C:\` debe rechazarse diciendo la ruta y por qué.
+2. **Archivo grande:** copia una carpeta con un archivo de varios GB (NTFS) o de 200 MB o más (exFAT/FAT32). La pantalla debe mostrar **«Copiado X de Y»**, la etapa y una velocidad que se mueve; nunca «0 bytes» quieto. Si el disco o el antivirus se detiene más de 15 s, aparece «El disco o el antivirus está tardando…».
+3. **Cancelar:** cancela a mitad. Debe decir «Cancelada. Se quitó la copia incompleta. Los originales no se tocaron.» y el USB debe quedar **sin** carpeta nueva (ni «….copiando»). No debe ofrecer «Quitar la copia». Al empezar otra copia **no** debe aparecer «Cancelando…».
+4. **Cerrar con una copia en curso:** cierra la ventana a mitad: pregunta «Hay una copia en curso»; si aceptas, cancela y cierra solo. Si el disco no responde, a los 10 s dice «Cancelada a la fuerza…» con el nombre exacto de la carpeta «….copiando» que puede quedar. Al volver a abrir la app avisa de esa copia incompleta y deja borrarla.
+
+Si algo se queda quieto, en **Ayuda y pruebas → Guardar registro de diagnóstico…** guardas un archivo con los tiempos de cada etapa (incluye rutas, no contenido): adjúntalo al reporte.
+
+### 8c. Volver a escanear
+Con un resultado en pantalla: **Volver a escanear** (arriba, en la lista, o F5) lee otra vez la misma carpeta sin preguntarte nada. Tras transferir (mover), el mapa dice «El mapa quedó desactualizado» y ofrece **Volver a escanear ahora**; nunca se re-escanea solo.
 
 ### 9. Limpiar
 1. **Ayuda y pruebas** → **Borrar datos de prueba** → **Sí, borrar los datos de prueba**. Solo borra `Documentos\BoneYardDog-Prueba`.
@@ -81,7 +92,7 @@ Para cuando necesites algo más: USB reales con distintos formatos, un archivo d
 3. **Paso 1 – Destino:** elige una unidad de la lista (verás letra, tipo USB / disco duro o SSD, formato y espacio libre) o «Elegir otra carpeta…». Elige la verificación (la rápida solo existe al copiar).
 4. **Paso 2 – Revisión previa:** lee los **impedimentos** (rojo: no se puede continuar) y los **avisos** (amarillo). Si es transferir y probablemente no cabe en la Papelera, tendrás que **elegir** entre borrar definitivamente o dejar el original.
 5. **Paso 3 – Progreso**, y después el **resultado** por carpeta. No se puede cerrar a mitad: usa «Cancelar la operación» (los originales no se tocan).
-6. En la barra superior, **«Verificar una copia anterior…»** comprueba una copia que ya hiciste (elige la carpeta del lote, la que tiene la fecha y contiene `MANIFIESTO.json`).
+6. En la barra lateral, **«Copias anteriores»** lista las copias que ya hiciste (las recuerda tu PC) y permite verificarlas de nuevo.
 
 ## Antes de empezar: datos de prueba (a mano)
 
@@ -104,7 +115,7 @@ Repite para: USB en FAT32, USB en exFAT, USB en NTFS, disco duro, SSD.
 
 1. Clic derecho en `Origen` → «Copiar a otro disco…», destino la unidad, verificación **completa**.
 2. En el paso 1 comprueba que la unidad aparece con su tipo, formato y espacio libre correctos (en FAT32 debe haber una línea sobre los 4 GB).
-3. Revisa el resultado: «Listo: 1 carpeta copiada y verificada». En el destino existe `BoneYardDog\<fecha>\` con `ESTADO.json`, `MANIFIESTO.json`, `LEEME.txt` y tu carpeta dentro de una carpeta con la letra de la unidad. Prueba «Abrir la copia en el Explorador».
+3. Revisa el resultado: «Listo: 1 carpeta copiada y verificada». En el destino existe `<destino>\<nombre de tu carpeta>` y nada más (sin `ESTADO.json`, `MANIFIESTO.json` ni `LEEME.txt`; los datos para verificarla viven en tu PC). Prueba «Abrir la copia en el Explorador».
 4. **Comprueba a ojo:** misma cantidad de archivos y de bytes (Propiedades), nombres con tildes/ñ/emoji bien, carpeta vacía presente y fechas de modificación iguales.
 5. El original sigue en `C:\PruebaBYD\Origen`, intacto.
 
@@ -150,14 +161,14 @@ Repite para: USB en FAT32, USB en exFAT, USB en NTFS, disco duro, SSD.
 
 1. Haz una copia completa a un USB (Prueba 1).
 2. **Expulsa** el USB («Quitar hardware de forma segura») y **desconéctalo**; vuelve a **conectarlo**.
-3. «Verificar una copia anterior…» → elige `BoneYardDog\<fecha>` del USB → «Verificar». **Esperado:** «La copia está bien».
+3. «Copias anteriores» → elige la copia → «Verificar». **Esperado:** «La copia está bien: N archivos verificados» (N > 0).
 4. **Estropea a propósito** la copia: cambia una letra de un archivo de texto, **borra** otro archivo y **agrega** uno nuevo. Vuelve a verificar. **Esperado:** «La copia tiene 3 problemas», con cada uno explicado (alterado, falta, sobra).
-5. Elige una carpeta que **no** tenga `MANIFIESTO.json`: debe rechazarla con un mensaje claro.
+5. Desconecta el USB y verifica: debe decir que no encuentra la carpeta y que conectes el disco (nunca «está bien»).
 
 ## Prueba 7 — Cancelar
 
 1. Origen con el archivo grande, destino un USB, **transferir**. Pulsa **«Cancelar la operación»** a mitad.
-2. **Esperado:** se detiene; el original sigue completo; `ESTADO.json` dice «cancelado»; el archivo a medias no queda en el destino. En el resultado puedes pulsar **«Quitar la copia»** (pide confirmación) y borra solo lo que BoneYardDog copió.
+2. **Esperado:** se detiene; el original sigue completo; el destino queda **limpio** (la carpeta provisional «….copiando» se borra sola; solo se borra lo que esa operación creó). No se ofrece «Quitar la copia».
 
 ## Prueba 8 — Cerrar la ventana con una copia en curso
 

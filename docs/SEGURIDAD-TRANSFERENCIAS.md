@@ -13,7 +13,7 @@ El programa solo elimina algo del **original** de dos maneras, y en ambas **solo
 1. enviándolo a la **Papelera** de Windows (`shell.trashItem`), o
 2. el **borrado definitivo** (`fs.rm`), que solo ocurre si el usuario lo confirmó de forma explícita (ver más abajo).
 
-Lo único otro que el motor puede borrar por su cuenta son **archivos que él mismo creó** en el destino (por ejemplo, una copia que quedó a medias, o «Quitar la copia»), y solo dentro de su propia carpeta de lote. Hay pruebas automáticas que lo vigilan: espían las llamadas al sistema de archivos y revisan el código fuente para comprobar que no existe ninguna otra forma de eliminar, que el borrado definitivo vive en una sola función y que esa función hace todas sus comprobaciones **antes** de borrar.
+Lo único otro que el motor puede borrar por su cuenta es **lo que esa misma operación creó** en el destino: su carpeta provisional «….copiando» y lo que hay dentro (al cancelar o fallar, o «Quitar la copia» de una copia completa), sin seguir enlaces y sin salir de ella. Una carpeta «….copiando» que quedó de una sesión anterior (por ejemplo tras un cierre forzado) solo se borra si BoneYardDog la anotó en su diario del PC, y siempre a petición del usuario. Hay pruebas automáticas que lo vigilan: espían las llamadas al sistema de archivos y revisan el código fuente para comprobar que no existe ninguna otra forma de eliminar, que el borrado definitivo vive en una sola función y que esa función hace todas sus comprobaciones **antes** de borrar.
 
 **La cuarentena ya no existe.** La Fase 3A movía el original a una carpeta `BoneYardDog-Cuarentena`; se eliminó del motor, de las pantallas y de las pruebas. La carpeta `BoneYardDog-Cuarentena` **sigue siendo una ruta protegida** (por si alguien ya la creó con la 3A: la app nunca la ofrece ni la toca).
 
@@ -53,13 +53,13 @@ Si Windows rechaza enviar la carpeta a la Papelera (o dice que terminó y la car
    - se pide retirar el original con la verificación rápida (para retirar hace falta la completa);
    - se pide borrar definitivamente sin la confirmación explícita.
    - Además hay **avisos** (no impiden continuar): enlaces que no se copiarán (y por eso el original no se retirará), elementos ilegibles, ruta larga, mismo disco, OneDrive, formato desconocido y «probablemente no cabe en la Papelera»; ese último hace que la pantalla pregunte qué hacer.
-2. **Copia**: cada archivo se lee en trozos, se calcula su huella **SHA-256** mientras se lee, y se escribe en el destino con la opción de "crear, nunca sobrescribir". Se fuerza la escritura física (`fsync`) antes de cerrar cada archivo, importante en memorias USB. Se conservan las fechas de modificación de archivos y carpetas, y se crean las carpetas vacías.
+2. **Copia** (a `<destino>\<nombre>.copiando`): cada archivo se lee en trozos, se calcula su huella **SHA-256** mientras se lee, y se escribe en el destino con la opción de "crear, nunca sobrescribir". Se fuerza la escritura física (`fsync`) antes de cerrar cada archivo, importante en memorias USB. Se conservan las fechas de modificación de archivos y carpetas, y se crean las carpetas vacías.
 3. **Verificación**:
    - **Completa (por defecto):** se vuelve a leer cada archivo del destino y se compara su huella con la del original. Detecta cualquier byte distinto.
    - **Rápida (opcional):** solo compara tamaño y fecha. **No comprueba el contenido** y por eso se rotula siempre así; con ella **no se puede retirar el original**.
    - Además, por cada carpeta se comparan los nombres, las cantidades y los bytes del destino con lo planificado (faltantes o sobrantes = error).
 4. **Retirar el original** (solo al "mover", y solo carpeta por carpeta): únicamente si **todo** se copió y verificó sin errores **y** el original **no cambió** desde la planificación (mismos nombres, tamaños y fechas, nada nuevo). Si algo cambió, el original no se toca.
-5. **Constancia**: en el destino queda `BoneYardDog\<fecha>\` con `ESTADO.json` (cómo terminó), `MANIFIESTO.json` (lista de archivos con tamaño, fecha y huella, y qué se hizo con cada original) y `LEEME.txt` (en español: qué es, cómo restaurar y cómo verificar).
+5. **Nombre final**: solo con todo verificado se renombra `<nombre>.copiando` a `<nombre>` (antes se comprueba que ese nombre **no exista**: nunca se sobrescribe; si existe, la copia queda como «….copiando» y se avisa). En el destino **no queda ningún archivo extra**. **Constancia**: el registro (lista de archivos con tamaño, fecha y huella) se guarda en tu PC (`userData\registros\<id>.json`, escritura atómica, últimos 200); sirve para «Copias anteriores» y no hace falta para que la copia sea válida.
 
 Cada carpeta de origen es **independiente**: si una falla, las demás siguen su camino.
 
@@ -71,10 +71,11 @@ Cada carpeta de origen es **independiente**: si una falla, las demás siguen su 
 | El disco de destino se llena | Se detiene toda la operación con el mensaje "Sin espacio en el destino". No se toca ningún original. |
 | Se desconecta el disco, o falla la lectura/escritura | Se detiene **toda** la operación. No se toca ningún original. |
 | El archivo cambia mientras se copia | Ese archivo falla ("cambió durante la copia"), se quita la copia a medias y el original no se retira. |
-| Se cancela | Se detiene en cualquier momento; no se toca ningún original que no se haya retirado ya; `ESTADO.json` queda en "cancelado". |
+| Se cancela | Se detiene en cualquier momento; no se toca ningún original; la carpeta provisional se borra sola (solo lo que esa operación creó). Si el hilo no responde en 10 s, el **perro guardián** lo corta, crea otro y avisa «Cancelada a la fuerza…» con el nombre exacto de la carpeta «….copiando» que puede quedar. |
 | La Papelera falla o no retira la carpeta | El original sigue donde estaba, se informa con el mensaje original y se ofrece borrarlo definitivamente (con confirmación). |
 | El borrado definitivo falla a mitad | «Borrado parcial»: se informa exactamente qué se borró y qué no; no se reintenta; la copia está completa. |
-| Se cierra la ventana con una copia en curso | La app pide confirmación; si se acepta, cancela la operación (los originales no se tocan). |
+| Se cierra la ventana con una copia en curso | La app pide confirmación; si se acepta, cancela la operación con el perro guardián (nunca se fuerza el cierre) y los originales no se tocan. |
+| Algo se queda esperando (disco, USB, antivirus) | Latido cada segundo con etapa y segundos sin avance; tras 15 s sin avance la pantalla dice «El disco o el antivirus está tardando…». `diagnostico.log` (en el PC) guarda tiempos de abrir el origen, primera lectura y escritura; se puede guardar desde «Ayuda y pruebas» (incluye rutas, nunca contenido). |
 
 ## Papelera: qué sabemos y qué no
 
@@ -97,7 +98,7 @@ Cada envío al repositorio ejecuta `npm run smoke:transfer` dentro de Electron, 
 | «Mover» con cuarentena (3A, **ya eliminada**) | `fs.rename` movió el original a `D:\BoneYardDog-Cuarentena\<lote>\…`. Se conserva como dato histórico: la cuarentena ya no existe. |
 | Nombres con tildes, `ñ`, espacios y emoji | Copiados y verificados sin problema (incluida una carpeta vacía con `ñ`). |
 | Ruta larga | Una ruta de origen de **325** caracteres y de destino de **382** se copió y verificó bien. La revisión previa **avisó** de la ruta larga (el motor no la bloquea: es el Explorador quien falla desde 260). |
-| Cancelación | Con un archivo de 96 MB: `ESTADO.json` quedó en «cancelado», la Papelera **no** se llamó y el original quedó intacto. |
+| Cancelación | Con un archivo de 96 MB: el estado quedó «cancelado», la Papelera **no** se llamó, el original quedó intacto y el destino quedó sin carpeta final ni «….copiando». |
 
 **Lo que esta prueba NO provoca** (haría falta crear varios GB): una carpeta que exceda la cuota de la Papelera, ni discos extraíbles, FAT32, exFAT o una desconexión real. Eso está en [`PRUEBAS-MANUALES.md`](PRUEBAS-MANUALES.md).
 
@@ -109,7 +110,7 @@ Cada envío al repositorio ejecuta `npm run smoke:transfer` dentro de Electron, 
 - **Transferir con la Papelera real** desde la pantalla: el original se retiró (Papelera de Windows) y la copia verificada es idéntica; «Quitar la copia» no se ofrece.
 - **Papelera fallida** (simulada, porque en el runner no falla): el original queda intacto; el botón de borrar no avanza sin marcar «Entiendo…»; con la marca, original ausente y copia idéntica.
 - **Origen sin Papelera** (simulado): aparece la pregunta con nada preseleccionado; borrar exige la confirmación en rojo; «dejar el original» copia y verifica.
-- **Verificar una copia anterior**: copia sana → «La copia está bien»; copia alterada a propósito (un byte, un archivo borrado, uno sobrante) → 3 problemas detectados.
+- **Copias anteriores** (`verifyRecord`): copia sana → «La copia está bien: N archivos» (N > 0); copia alterada a propósito (un byte, un archivo borrado, uno sobrante) → 3 problemas detectados; una copia con 0 archivos verificados **nunca** dice «está bien» (estado «sin archivos»).
 - Las **capturas** de cada paso (`asistente-*.png`) están en el artefacto `smoke-artifacts` de la ejecución.
 
 **Sorpresas:** (1) una marca interna del destino anterior seguía en la pantalla al abrir otra operación (corregido); (2) en la ventana mínima el cuadro de una carpeta transferida puede estar plegado en «Otras», así que la marca «ya transferida» no siempre se ve en el mapa (el registro interno sí). **No** se provocó en Windows una Papelera que realmente rechace por tamaño.
@@ -121,19 +122,19 @@ Cada envío ejecuta `npm run smoke:discos` en Windows: crea con `diskpart` tres 
 | Qué | Observación |
 |---|---|
 | Tipo y formato que devuelve `getVolumeInfo` | Los tres: tipo **`fixed`** (un VHDX montado se ve como disco fijo, no como USB) y formato correcto: **NTFS, exFAT y FAT32**. ~1,5 s por consulta (la primera, ~5 s). |
-| Copia completa (tildes, ñ, emoji, carpeta vacía, archivos de 0 bytes, 5 MB) | Verificada e **idéntica** (comparación independiente) en los tres; el origen no cambió; `verifyBatch` bien. |
+| Copia completa (tildes, ñ, emoji, carpeta vacía, archivos de 0 bytes, 5 MB) | Verificada e **idéntica** (comparación independiente) en los tres; el origen no cambió; `verifyRecord` bien. |
 | Archivo de 4 GiB (disperso) hacia FAT32 | **Bloqueado** (`archivo-demasiado-grande`) sin escribir nada en el destino. Uno de 4 GiB − 1 byte **no** se bloquea por tamaño. En NTFS y exFAT no hay bloqueo por tamaño. |
 | Nombres con punto o espacio al final | Windows los lista y la revisión los **bloquea** (`nombres-no-validos`) en los tres formatos. Los nombres reservados (`CON`, `NUL`…) **no** se probaron en disco real (Windows los trata como dispositivos y podrían colgar la prueba): los cubren las pruebas unitarias. |
 | 3 000 archivos pequeños en una carpeta | Copiados y verificados en los tres formatos (unos 11–15 s). |
 | Verificación **rápida** y fechas | Aceptada en los tres. **Observado:** en exFAT y FAT32 la fecha de modificación del destino difiere hasta **~1,9 s** del origen (redondeo a 2 s); NTFS, 0 ms. La tolerancia de 2 s del motor alcanza, pero **con poco margen**. |
-| `verifyBatch` tras **desmontar y volver a montar** el disco | Copia sana: bien. Con un byte alterado a mano: detecta «huella». Con un archivo borrado: detecta «falta». |
+| `verifyRecord` tras **desmontar y volver a montar** el disco | Copia sana: bien. Con un byte alterado a mano: detecta «huella». Con un archivo borrado: detecta «falta». |
 | **Disco lleno** (se llena hasta dejar 12 MB **después** de planificar) | La operación se detiene con «Sin espacio en el destino» (`ENOSPC`), estado «con errores», **original intacto**, **ningún archivo parcial**. Una revisión nueva con el disco lleno bloquea por «sin espacio». |
 
 **Lo que esto NO cubre:** un **USB físico** (velocidad, controladores, sistemas de archivos de fábrica raros, discos que se duermen), una **desconexión real** a mitad (un disco virtual se puede desmontar pero no «arrancar»), la **cuota real de la Papelera**, ni equipos con antivirus que interfieran.
 
 ## Qué NO garantiza (límites honestos)
 
-1. **La caché de Windows.** La verificación vuelve a leer el archivo del destino, pero Windows puede responder desde su memoria caché y no desde el disco físico. Por eso existe **«Verificar un lote»** (`verifyBatch`): conviene usarlo **después de expulsar y volver a conectar el disco**, que es cuando la lectura sí viene del disco.
+1. **La caché de Windows.** La verificación vuelve a leer el archivo del destino, pero Windows puede responder desde su memoria caché y no desde el disco físico. Por eso existe **«Copias anteriores»** (`verifyRecord`): conviene usarlo **después de expulsar y volver a conectar el disco**, que es cuando la lectura sí viene del disco.
 2. **La verificación rápida no comprueba el contenido.** Detecta tamaño o fecha distintos, nada más. Una corrupción que conserve tamaño y fecha pasa desapercibida. Está probado y documentado así.
 3. **La cuota de la Papelera es una estimación.** La regla del 5 % es conservadora pero no exacta.
 4. **Las fechas de creación no se conservan** en el destino (solo las de modificación): la copia tiene fecha de creación nueva.
@@ -147,7 +148,7 @@ Cada envío ejecuta `npm run smoke:discos` en Windows: crea con `diskpart` tres 
 
 ## Cómo se prueba
 
-- Pruebas automáticas con carpetas temporales: copia feliz, corrupción de un byte, el origen que cambia durante la copia o antes de retirar, cancelación, disco lleno, disco que desaparece, FAT32 simulado, nombres inválidos, enlaces, Papelera simulada (éxito y fallo), borrado definitivo (feliz, sin confirmar, origen cambiado, copia incompleta, con enlaces, parcial), `eliminarDefinitivamente`, rutas reales (enlaces hacia zonas protegidas), carpetas independientes, `quitarCopiado` (incluido el intento de salir del lote a través de un enlace) y `verifyBatch`.
+- Pruebas automáticas con carpetas temporales: copia feliz, corrupción de un byte, el origen que cambia durante la copia o antes de retirar, cancelación, disco lleno, disco que desaparece, FAT32 simulado, nombres inválidos, enlaces, Papelera simulada (éxito y fallo), borrado definitivo (feliz, sin confirmar, origen cambiado, copia incompleta, con enlaces, parcial), `eliminarDefinitivamente`, rutas reales (enlaces hacia zonas protegidas), carpetas independientes, `quitarCopiado` (incluido el intento de salir del lote a través de un enlace) y `verifyRecord`, el perro guardián (con un disco simulado que se cuelga al leer y al escribir), el diagnóstico y las comprobaciones de renombrado sin sobrescribir.
 - **Pruebas de mutación** (`node scripts/mutaciones-transferencia.js`): se rompe el motor a propósito (saltar la huella, retirar sin verificar, sobrescribir, omitir la comprobación de que el origen no cambió, ignorar el límite de FAT32, retirar antes de verificar; y en la 3B: borrar sin verificar, sin confirmación, sin recomprobar el origen, sin recomprobar la copia, siguiendo enlaces, e ignorar `realpath`) y se comprueba que alguna prueba falle: 23 de 23 se detectan.
 - **Windows real** en cada envío al repositorio: `npm run smoke:transfer` (el motor, con la Papelera de verdad; artefacto `transferencia.json`) y `npm run smoke` (la app entera: abre el asistente con ratón y teclado reales, copia, transfiere, borra definitivamente con y sin confirmación y verifica una copia anterior, con **capturas de cada paso** `asistente-*.png` en el artefacto).
 - Falta, y debe hacerse a mano con datos de prueba, lo descrito en [`PRUEBAS-MANUALES.md`](PRUEBAS-MANUALES.md): USB reales en FAT32, exFAT y NTFS, desconexión real, etc.

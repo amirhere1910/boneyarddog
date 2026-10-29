@@ -23,7 +23,10 @@ Desde el mapa o la lista, con clic derecho o con la barra de selección:
 
 - **Copiar a otro disco**: copia la carpeta a un USB, disco duro o SSD (NTFS, exFAT o FAT32), la **verifica** y deja el original donde estaba.
 - **Transferir a otro disco (mover)**: copia, verifica **por completo** (huella SHA-256 de cada archivo) y envía el original a la **Papelera**. Si no cabe en la Papelera (o el disco de origen no tiene), te pregunta si prefieres **borrarlo definitivamente** (con una confirmación aparte) o dejar el original.
-- **Verificar una copia anterior**: vuelve a comprobar una copia ya hecha (conviene después de expulsar y reconectar el disco).
+- **Copias anteriores** (barra lateral): BoneYardDog recuerda en tu PC las copias que hizo y las vuelve a comprobar cuando quieras (conviene después de expulsar y reconectar el disco).
+- La copia queda **tal cual**: `<destino>\<nombre de la carpeta>`, sin carpetas de fecha ni archivos extra. Puedes elegir la raíz de un USB (`E:\`) como destino. Si cancelas o algo falla, la copia incompleta se quita sola (solo lo que esa operación creó).
+- **Volver a escanear** (cabecera, pestaña Lista o F5): vuelve a leer la misma carpeta o unidad sin elegirla otra vez.
+- Si algo se queda esperando, **Ayuda y pruebas → Guardar registro de diagnóstico…** guarda los tiempos de cada etapa (incluye rutas, no contenido).
 
 > ⚠️ **Prueba primero con datos de prueba, nunca con datos que no tengas respaldados.** El borrado definitivo no se puede deshacer. Qué garantiza la app y qué no: [`docs/SEGURIDAD-TRANSFERENCIAS.md`](docs/SEGURIDAD-TRANSFERENCIAS.md). Cómo probarla a mano con discos reales: [`docs/PRUEBAS-MANUALES.md`](docs/PRUEBAS-MANUALES.md).
 
@@ -45,7 +48,8 @@ npm run smoke      # abre la app sola, escanea carpetas de ejemplo, usa los cont
 npm run smoke:transfer  # prueba el motor de transferencia en un sistema real (con la Papelera de verdad)
                         # y guarda smoke-artifacts/transferencia.json
 npm run smoke:discos    # (solo Windows, como administrador) crea discos virtuales NTFS, exFAT y FAT32 con diskpart
-                        # y prueba el motor contra ellos; guarda smoke-artifacts/discos.json
+                        # y prueba el motor contra ellos (raíz como destino, archivo grande con tiempos y eventos);
+                        # guarda smoke-artifacts/discos.json y los diagnostico-*.log
 npm run empaquetar      # construye el instalador en dist/ (en Windows; normalmente lo hace GitHub)
 ```
 

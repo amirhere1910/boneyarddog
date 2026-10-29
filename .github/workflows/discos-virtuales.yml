@@ -11,7 +11,7 @@ jobs:
   discos:
     name: Copiar a discos NTFS, exFAT y FAT32 reales (virtuales)
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -27,10 +27,15 @@ jobs:
           whoami /groups | Select-String "High Mandatory Level"
       - name: Probar el motor contra los discos virtuales
         run: npm run smoke:discos
+        env:
+          # Archivo grande del escenario (i): ~5,8 GB. Se puede bajar con BYD_BIG_MB si el runner se queda sin espacio.
+          BYD_BIG_MB: "5900"
       - name: Guardar lo observado
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: discos
-          path: smoke-artifacts/discos.json
+          path: |
+            smoke-artifacts/discos.json
+            smoke-artifacts/diagnostico-*.log
           if-no-files-found: warn
