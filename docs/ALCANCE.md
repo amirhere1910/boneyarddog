@@ -40,6 +40,16 @@ Decisiones técnicas:
 - **Pulido del mapa** (3A): cuadros diminutos plegados en «Otras», mapa a pantalla completa, tope de 500 selecciones sin perder la selección.
 - **Lógica del asistente en módulo puro** (`src/shared/transfer-wizard.js`, con pruebas); el dibujo está en `src/renderer/transfer-ui.js`.
 
+## Instalador, datos de prueba y discos virtuales (Fase 4)
+
+- **Instalador para Windows x64** construido por GitHub con un botón (workflow «Construir instalador», `workflow_dispatch`, y al empujar una etiqueta `v*`, que además crea una Release): `BoneYardDog-<versión>-instalador.exe` (NSIS por usuario, sin administrador, elige carpeta, menú Inicio, escritorio opcional, desinstalador) y `BoneYardDog-<versión>-portatil.zip`. Con huellas SHA-256 (`SHA256SUMS.txt`). **No está firmado** (no hay certificado de firma de código): Windows mostrará el aviso de SmartScreen. Dependencia nueva, solo de desarrollo y con versión fija: `electron-builder`. La app en ejecución sigue sin dependencias propias.
+- El CI **prueba el instalador**: instala en silencio, abre la app instalada con la prueba automática, desinstala y prueba el portátil.
+- **Datos de prueba dentro de la app** («Ayuda y pruebas» → «Crear datos de prueba»): 5 carpetas en `Documentos\BoneYardDog-Prueba`, hasta 1 GB, que solo se borran si tienen la marca `.byd-prueba` y nada ajeno dentro. Limitación: Node **no puede cambiar la fecha de creación** en Windows; por eso la pantalla ofrece «ignorar la fecha de creación» para esa prueba.
+- **Discos virtuales reales en CI** (NTFS, exFAT y FAT32, con `diskpart`): workflow «Discos virtuales», `npm run smoke:discos`, resultado en el artefacto `discos` (`discos.json`).
+- La versión se ve en el pie de la app, con la dirección del proyecto como texto (la app no usa red).
+
+**Qué falta:** probar con un USB físico real, con desconexiones reales y con la cuota real de la Papelera; firmar el código (cuando haya certificado) para quitar el aviso de SmartScreen; actualizaciones automáticas (hoy se descarga una versión nueva a mano); instalador para otras arquitecturas (ARM64, 32 bits).
+
 ## El mapa (Fase 2C)
 
 Dos pestañas: **Mapa** (la que se abre al terminar de escanear) y **Lista de candidatas**. El período "Sin uso desde hace" es el mismo para las dos.
@@ -100,8 +110,8 @@ Todo el cálculo (celdas, detalles, selección) lo hace el servicio en su hilo; 
 | 2B | Detección de carpetas grandes sin uso, configuración, ignoradas, unidades y pantalla de lista | **Terminada** |
 | 2C | Mapa visual de cuadros por tamaño con color por actividad, pestañas, menú contextual, detalles y selección con espacio total | **Terminada** |
 | 3A | **Motor** de copia y transferencia (sin pantallas): revisión previa, copia con huella SHA-256, verificación, retirada del original y `verifyBatch`; más el pulido del mapa | **Terminada** |
-| 3B | Pantallas (asistente de 3 pasos, resultado, «Verificar una copia anterior»), «Copiar…» y «Transferir…» activos, canales IPC validados, rutas reales, sin cuarentena y con borrado definitivo confirmado | **Terminada** (esta) |
-| 4 | Instalador para Windows y publicación | Pendiente |
+| 3B | Pantallas (asistente de 3 pasos, resultado, «Verificar una copia anterior»), «Copiar…» y «Transferir…» activos, canales IPC validados, rutas reales, sin cuarentena y con borrado definitivo confirmado | **Terminada** |
+| 4 | Instalador para Windows (y portátil), datos de prueba dentro de la app y discos virtuales NTFS/exFAT/FAT32 en CI | **Terminada** (esta; sin firmar) |
 
 Ideas futuras (sin fecha): escanear todas las unidades a la vez; un mapa con las subcarpetas anidadas dentro de cada cuadro.
 
