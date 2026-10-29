@@ -13,6 +13,23 @@ const copyOpts = (src, dest, extra = {}) => ({ sources: [src], destinationRoot: 
 const moveOpts = (src, dest, disposal, extra = {}) => ({ sources: [src], destinationRoot: dest, mode: 'move', verify: 'full', disposal, ...extra });
 const codes = (list) => list.map((b) => b.code);
 
+// Copia un árbol conservando las fechas. (No se usa fs.cpSync: en Windows con Node 22 el proceso se cae de golpe, código 0xC0000409.)
+function copyTree(from, to) {
+  fs.mkdirSync(to, { recursive: true });
+  for (const n of fs.readdirSync(from)) {
+    const a = path.join(from, n);
+    const b = path.join(to, n);
+    const st = fs.lstatSync(a);
+    if (st.isDirectory()) copyTree(a, b);
+    else {
+      fs.copyFileSync(a, b);
+      fs.utimesSync(b, st.atime, st.mtime);
+    }
+  }
+  const d = fs.lstatSync(from);
+  fs.utimesSync(to, d.atime, d.mtime);
+}
+
 test('pickNames: «Fotos», «Fotos (2)», «Fotos (3)»…, nunca repite y compara sin distinguir mayúsculas', () => {
   const taken = new Set();
   assert.deepEqual(pickNames('Fotos', taken), { finalName: 'Fotos', workName: 'Fotos.copiando', renamed: false });
@@ -253,13 +270,13 @@ test('borrado definitivo: si la «copia» pasó a ser un enlace hacia OTRO sitio
     hooks: {
       afterVerify: async () => {
         // Una copia idéntica en otra parte, y la carpeta del destino reemplazada por un enlace hacia ella.
-        fs.cpSync(path.join(dest, name), otro, { recursive: true, preserveTimestamps: true });
+        copyTree(path.join(dest, name), otro);
         fs.rmSync(path.join(dest, name), { recursive: true });
         try {
           fs.symlinkSync(otro, path.join(dest, name), 'dir');
         } catch {
           ok = false;
-          fs.cpSync(otro, path.join(dest, name), { recursive: true, preserveTimestamps: true });
+          copyTree(otro, path.join(dest, name));
         }
       },
     },

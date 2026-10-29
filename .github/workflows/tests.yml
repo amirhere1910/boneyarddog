@@ -17,8 +17,4 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Diagnóstico (temporal) de copia-simple en Windows
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        run: node scripts/_dbg-win.js
       - run: npm test
