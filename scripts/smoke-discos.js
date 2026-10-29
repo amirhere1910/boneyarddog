@@ -490,9 +490,19 @@ async function main() {
       // Se llena el disco hasta dejar unos 12 MB libres.
       const st = fs.statfsSync(disk.root);
       const free = Number(st.bavail) * Number(st.bsize);
-      const filler = path.join(disk.root, 'relleno.bin');
-      const fillBytes = free - 12 * MIB;
-      const t = run('fsutil', ['file', 'createnew', filler, String(fillBytes)]);
+      // Varios archivos de relleno: FAT32 no admite uno solo de 4 GiB o más (y el disco ahora es grande para el archivo grande de (i)).
+      const fillers = [];
+      let remaining = free - 12 * MIB;
+      const t = { out: '' };
+      for (let n = 0; remaining > 0; n++) {
+        const chunk = Math.min(remaining, 3800 * MIB);
+        const f = path.join(disk.root, `relleno-${n}.bin`);
+        const r = run('fsutil', ['file', 'createnew', f, String(chunk)]);
+        t.out += `${r.out.trim().slice(0, 80)} `;
+        if (!fs.existsSync(f)) break;
+        fillers.push(f);
+        remaining -= chunk;
+      }
       const st2 = fs.statfsSync(disk.root);
       entry.libreAntes = free;
       entry.libreDespuesDeLlenar = Number(st2.bavail) * Number(st2.bsize);
@@ -521,7 +531,7 @@ async function main() {
       const pf2 = await e.preflight({ sources: [dir], destinationRoot: destE, mode: 'copy', verify: 'full' });
       entry.revisionConDiscoLleno = pf2.blockers.map((b) => b.code);
       if (!pf2.blockers.some((b) => b.code === 'sin-espacio')) violation(`${tag('e')}: con el disco lleno la revisión previa no bloqueó por espacio`);
-      fs.rmSync(filler, { force: true });
+      for (const f of fillers) fs.rmSync(f, { force: true });
       return entry;
     });
 
