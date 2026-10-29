@@ -5,7 +5,8 @@ const { fs, path, makeSource, makeEngine, makeDest } = H;
 const os = require('node:os');
 const L = (m) => fs.writeSync(2, `[dbg] ${m}\n`);
 (async () => {
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'dbg-'));
+  fs.mkdirSync(path.join(process.cwd(), '.test-tmp'), { recursive: true });
+  const base = fs.mkdtempSync(path.join(process.cwd(), '.test-tmp', 'dbg-'));
   const src = makeSource(base);
   const dest = makeDest(base);
   const otro = path.join(base, 'respaldo-en-otro-sitio');
