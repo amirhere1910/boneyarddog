@@ -37,8 +37,12 @@ const CHANNELS = Object.freeze({
   transferProgress: 'byd:transfer-progress',
   transferDeleteFromResult: 'byd:transfer-delete-from-result',
   transferRemoveCopy: 'byd:transfer-remove-copy',
-  verifyBatchChooseFolder: 'byd:verify-batch-choose-folder',
-  verifyBatchRun: 'byd:verify-batch-run',
+  // Copias anteriores: el registro vive en el PC; la interfaz solo manda el id de una copia (16 hex), nunca una ruta.
+  copiesList: 'byd:copies-list',
+  copiesVerify: 'byd:copies-verify',
+  copiesRemove: 'byd:copies-remove',
+  pendingList: 'byd:pending-list',
+  pendingClean: 'byd:pending-clean',
   // Datos de prueba (Fase 4): la ruta (Documentos\\BoneYardDog-Prueba) la fija SOLO el proceso principal.
   testDataStatus: 'byd:test-data-status',
   testDataCreate: 'byd:test-data-create',
@@ -186,7 +190,7 @@ function validateDeleteFromResult(runId, indices, confirm) {
 }
 
 /** Opciones de «verificar una copia anterior»: solo { mode: 'full' | 'quick' } (por defecto, completa). */
-function validateVerifyBatchOptions(options) {
+function validateVerifyOptions(options) {
   if (options === undefined) return { mode: 'full' };
   if (options === null || typeof options !== 'object' || Array.isArray(options)) throw new ValidationError('Las opciones deben ser un objeto');
   for (const key of Object.keys(options)) if (key !== 'mode') throw new ValidationError(`Dato no admitido: ${key}`);
@@ -268,7 +272,7 @@ module.exports = {
   validateBoolean,
   validateTransferPreflight,
   validateDeleteFromResult,
-  validateVerifyBatchOptions,
+  validateVerifyOptions,
   validateTestDataDelete,
   isTrustedSender,
   sameFileUrl,

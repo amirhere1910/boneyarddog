@@ -79,7 +79,8 @@ test('copia feliz: anidadas, tildes, ñ, emoji, 0 bytes, 64 MB, carpetas vacías
   assert.deepEqual(r.carpetas[0].errores, []);
 
   const copy = r.carpetas[0].destino;
-  assert.ok(copy.includes(path.join('BoneYardDog', '2026-10-27_1405')), copy);
+  assert.equal(copy, path.join(fs.realpathSync(dest), path.basename(src)), 'queda <destino>\\<nombre de la carpeta>, sin unidad, ruta larga ni carpeta de fecha');
+  assert.deepEqual(fs.readdirSync(dest), [path.basename(src)], 'y NADA más en el destino (ningún archivo de BoneYardDog)');
   assert.deepEqual(snapshot(copy), before, 'mismos nombres, tamaños y contenido (incluye vacía y 0 bytes)');
   assert.deepEqual(snapshot(src), before, 'el origen no cambió');
 
@@ -102,55 +103,54 @@ test('copia feliz: anidadas, tildes, ñ, emoji, 0 bytes, 64 MB, carpetas vacías
   assert.equal(last.overallFilesDone, 6);
   assert.ok(events.some((e) => typeof e.bytesPerSecond === 'number'));
 
-  // En modo copiar no se elimina ni renombra NADA del origen (y solo la sonda propia del destino).
+  // En modo copiar no se elimina ni renombra NADA del origen (solo la sonda y el cambio de nombre en el destino).
   const destructive = calls.filter((c) => DESTRUCTIVE.has(c.name));
   assert.ok(destructive.every((c) => !isInside(String(c.args[0]), src)), JSON.stringify(destructive.map((c) => [c.name, c.args[0]])));
-  assert.deepEqual(destructive.map((c) => [c.name, path.basename(c.args[0]).startsWith('.byd-sonda-')]), [['unlink', true]], 'solo se quitó la sonda de escritura');
+  assert.deepEqual(
+    destructive.map((c) => [c.name, c.name === 'rename' ? `${path.basename(c.args[0])} -> ${path.basename(c.args[1])}` : path.basename(c.args[0]).startsWith('.byd-sonda-')]),
+    [['unlink', true], ['rename', `${path.basename(src)}.copiando -> ${path.basename(src)}`]],
+    'solo se quitó la sonda de escritura y se cambió el nombre de la carpeta provisional',
+  );
   assert.ok(fs.readdirSync(dest).every((n) => !n.startsWith('.byd-sonda')), 'la sonda no queda en el destino');
 });
 
-test('ESTADO.json, MANIFIESTO.json y LEEME.txt: contenido correcto', async (t) => {
+test('el registro (en el PC) tiene lo necesario para verificar, y en el destino no hay NINGÚN archivo de BoneYardDog', async (t) => {
   const base = tmpDir(t);
   const src = makeSource(base);
   const dest = makeDest(base);
-  const { fs: sfs, calls } = spyFs();
-  const { engine } = makeEngine(base, { fs: sfs });
+  const { engine, registry } = makeEngine(base);
   const pf = await engine.preflight(copyOpts(src, dest));
   const r = await engine.run(pf.plan);
-
-  const estadoWrites = calls.filter((c) => c.name === 'writeFile' && c.args[0].endsWith('ESTADO.json')).map((c) => JSON.parse(c.args[1]).estado);
-  assert.equal(estadoWrites[0], 'en-curso', 'se escribe al empezar');
-  assert.equal(estadoWrites[estadoWrites.length - 1], 'completo');
-  const estado = JSON.parse(fs.readFileSync(path.join(r.batchFolder, 'ESTADO.json'), 'utf8'));
-  assert.equal(estado.estado, 'completo');
-  assert.equal(estado.carpetas[0].resultado, 'copiada-verificada');
-
-  const m = JSON.parse(fs.readFileSync(path.join(r.batchFolder, 'MANIFIESTO.json'), 'utf8'));
-  assert.equal(m.version, 1);
-  assert.equal(m.app.nombre, 'BoneYardDog');
-  assert.equal(m.app.version, '0.0.0-prueba');
-  assert.equal(m.modo, 'copy');
-  assert.equal(m.verificacion, 'full');
-  assert.equal(m.avisoVerificacion, null);
-  assert.equal(m.lote, '2026-10-27_1405');
-  assert.equal(m.sistemaDeArchivos, 'NTFS');
-  const c = m.carpetas[0];
-  assert.equal(c.origen, src);
-  assert.equal(c.resultado, 'copiada-verificada');
-  assert.deepEqual(c.original, { accion: 'sin-tocar', motivo: 'copiar no retira nada' });
-  assert.deepEqual(c.archivos.map((a) => a.ruta), ['a.txt', 'canción.txt', 'cero.bin', 'sub/hondo/x.bin', 'sub/y.txt']);
-  for (const a of c.archivos) {
+  const c = r.carpetas[0];
+  // Destino limpio: solo la carpeta, y dentro exactamente lo del origen.
+  assert.deepEqual(fs.readdirSync(dest), [path.basename(src)]);
+  assert.deepEqual(Object.keys(snapshot(dest)).filter((k) => /ESTADO|MANIFIESTO|LEEME|BoneYardDog|\.byd/i.test(k)), []);
+  // Registro.
+  assert.match(c.registroId, /^[0-9a-f]{16}$/);
+  const rec = await registry.get(c.registroId);
+  assert.equal(rec.version, 1);
+  assert.equal(rec.nombre, path.basename(src));
+  assert.equal(rec.origen, src);
+  assert.equal(rec.destino, c.destino);
+  assert.equal(rec.modo, 'copy');
+  assert.equal(rec.verificacion, 'full');
+  assert.equal(rec.sistemaDeArchivos, 'NTFS');
+  assert.equal(rec.fecha, new Date(2026, 9, 27, 14, 5).toISOString());
+  assert.deepEqual(rec.original, { accion: 'sin-tocar', motivo: 'copiar no retira nada' });
+  assert.deepEqual(rec.archivos.map((a) => a.ruta), ['a.txt', 'canción.txt', 'cero.bin', 'sub/hondo/x.bin', 'sub/y.txt']);
+  for (const a of rec.archivos) {
     const file = path.join(src, ...a.ruta.split('/'));
     assert.equal(a.tamano, fs.statSync(file).size);
     assert.equal(a.sha256, sha(file), a.ruta);
     assert.ok(Math.abs(a.mtimeMs - fs.statSync(file).mtimeMs) < 1);
   }
-  assert.deepEqual(c.carpetasVacias.sort(), ['sub', 'sub/hondo', 'vacia']);
-  assert.deepEqual(c.errores, []);
-  assert.equal(c.destino.startsWith(process.platform === 'win32' ? `${src[0].toUpperCase()}/` : 'raiz/'), true, 'la carpeta de la unidad: su letra en Windows, "raiz" en otros sistemas');
-
-  const leeme = fs.readFileSync(path.join(r.batchFolder, 'LEEME.txt'), 'utf8');
-  for (const frase of ['BONEYARDDOG', 'CÓMO RESTAURAR', 'CÓMO VERIFICAR', 'SHA-256', 'MANIFIESTO.json', 'ESTADO.json']) assert.ok(leeme.includes(frase), frase);
+  assert.deepEqual([...rec.carpetasVacias].sort(), ['sub', 'sub/hondo', 'vacia']);
+  assert.equal(rec.totalBytes, pf.plan.totals.bytes);
+  // Y verifica bien más tarde, con ese registro.
+  const v = await engine.verifyRecord(rec, { mode: 'full' });
+  assert.equal(v.estado, 'ok');
+  assert.equal(v.verificados, 5);
+  assert.deepEqual(v.problemas, []);
 });
 
 test('NUNCA sobrescribe: si el archivo ya existe en el destino, es un error de ese archivo y su contenido queda intacto', async (t) => {
@@ -160,7 +160,7 @@ test('NUNCA sobrescribe: si el archivo ya existe en el destino, es un error de e
   const { fs: sfs } = spyFs({
     after: (name, args) => {
       // Justo después de crear la carpeta contenedora, aparece un archivo ajeno con el mismo nombre que otro del plan.
-      if (name === 'mkdir' && path.basename(args[0]) === path.basename(src)) fs.writeFileSync(path.join(args[0], 'a.txt'), 'NO TOCAR: es del usuario');
+      if (name === 'mkdir' && path.basename(args[0]) === `${path.basename(src)}.copiando`) fs.writeFileSync(path.join(args[0], 'a.txt'), 'NO TOCAR: es del usuario');
     },
   });
   const { engine } = makeEngine(base, { fs: sfs });
@@ -169,22 +169,55 @@ test('NUNCA sobrescribe: si el archivo ya existe en el destino, es un error de e
   const c = r.carpetas[0];
   assert.equal(c.resultado, 'con-errores');
   assert.ok(c.errores.some((e) => e.ruta === 'a.txt' && e.codigo === 'EEXIST'), JSON.stringify(c.errores));
-  assert.equal(fs.readFileSync(path.join(c.destino, 'a.txt'), 'utf8'), 'NO TOCAR: es del usuario', 'su contenido sigue intacto (ni se sobrescribió ni se borró)');
+  const work = path.join(dest, `${path.basename(src)}.copiando`);
+  assert.equal(fs.readFileSync(path.join(work, 'a.txt'), 'utf8'), 'NO TOCAR: es del usuario', 'su contenido sigue intacto (ni se sobrescribió ni se borró)');
+  assert.equal(fs.existsSync(c.destino), false, 'la carpeta final NO existe: nunca parece una copia buena');
+  assert.equal(c.limpieza.limpia, false, 'la limpieza respetó lo ajeno y lo dice');
+  assert.deepEqual(c.limpieza.pendientes, [work]);
+  assert.match(c.motivo, /quedó la carpeta/);
   assert.equal(r.estado, 'con-errores');
 });
 
-test('una carpeta de destino que ya existe tampoco se pisa (el lote nuevo toma otro nombre)', async (t) => {
+test('si el destino ya tiene algo con ese nombre se usa «(2)», «(3)»… y se avisa; lo existente no se toca', async (t) => {
   const base = tmpDir(t);
   const src = makeSource(base);
   const dest = makeDest(base);
-  fs.mkdirSync(path.join(dest, 'BoneYardDog', '2026-10-27_1405'), { recursive: true });
-  fs.writeFileSync(path.join(dest, 'BoneYardDog', '2026-10-27_1405', 'viejo.txt'), 'lote anterior');
+  const name = path.basename(src);
+  fs.mkdirSync(path.join(dest, name));
+  fs.writeFileSync(path.join(dest, name, 'viejo.txt'), 'lo que ya había');
+  fs.mkdirSync(path.join(dest, `${name} (2)`));
   const { engine } = makeEngine(base);
   const pf = await engine.preflight(copyOpts(src, dest));
+  assert.deepEqual(pf.blockers, []);
+  const w = pf.warnings.find((x) => x.code === 'renombrado-por-nombre-existente');
+  assert.ok(w, 'avisa');
+  assert.match(w.message, new RegExp(`Se guardará como «${name} \\(3\\)» porque ya existe algo con ese nombre`));
+  assert.equal(pf.plan.sources[0].finalName, `${name} (3)`);
   const r = await engine.run(pf.plan);
-  assert.equal(r.lote, '2026-10-27_1405-2');
-  assert.equal(fs.readFileSync(path.join(dest, 'BoneYardDog', '2026-10-27_1405', 'viejo.txt'), 'utf8'), 'lote anterior');
   assert.equal(r.estado, 'completo');
+  assert.equal(r.carpetas[0].destino, path.join(fs.realpathSync(dest), `${name} (3)`));
+  assert.equal(fs.readFileSync(path.join(dest, name, 'viejo.txt'), 'utf8'), 'lo que ya había');
+  assert.deepEqual(fs.readdirSync(path.join(dest, `${name} (2)`)), []);
+  assert.deepEqual(snapshot(path.join(dest, `${name} (3)`)), snapshot(src));
+});
+
+test('dos orígenes con el mismo nombre: la segunda se guarda como «(2)» y la revisión lo dice', async (t) => {
+  const base = tmpDir(t);
+  const a = path.join(base, 'uno', 'Fotos');
+  const b = path.join(base, 'dos', 'Fotos');
+  write(path.join(a, 'a.txt'), 'de uno');
+  write(path.join(b, 'b.txt'), 'de dos');
+  const dest = makeDest(base);
+  const { engine } = makeEngine(base);
+  const pf = await engine.preflight({ sources: [a, b], destinationRoot: dest, mode: 'copy', verify: 'full' });
+  assert.deepEqual(pf.blockers, []);
+  assert.deepEqual(pf.plan.sources.map((x) => x.finalName), ['Fotos', 'Fotos (2)']);
+  assert.match(pf.warnings.find((x) => x.code === 'renombrado-por-nombre-existente').message, /«Fotos \(2\)» porque otra carpeta elegida se llama igual/);
+  const r = await engine.run(pf.plan);
+  assert.equal(r.estado, 'completo');
+  assert.deepEqual(fs.readdirSync(dest).sort(), ['Fotos', 'Fotos (2)']);
+  assert.equal(fs.readFileSync(path.join(dest, 'Fotos', 'a.txt'), 'utf8'), 'de uno');
+  assert.equal(fs.readFileSync(path.join(dest, 'Fotos (2)', 'b.txt'), 'utf8'), 'de dos');
 });
 
 // ================================================================== verificación
@@ -206,8 +239,9 @@ test('CORRUPCIÓN: un byte alterado al escribir => la verificación completa fal
   assert.deepEqual(trashed, [], 'la Papelera no se llamó');
   assert.deepEqual(snapshot(src), before, 'el original está intacto');
   assert.equal(r.estado, 'con-errores');
-  const man = JSON.parse(fs.readFileSync(path.join(r.batchFolder, 'MANIFIESTO.json'), 'utf8'));
-  assert.equal(man.carpetas[0].original.accion, 'sin-tocar');
+  assert.equal(c.limpieza.limpia, true, 'la copia dañada se quitó sola');
+  assert.deepEqual(fs.readdirSync(dest), [], 'en el destino no queda nada: ni copia dañada ni carpeta provisional');
+  assert.equal(c.registroId, null, 'una copia dañada no se registra como buena');
 });
 
 test('la verificación RÁPIDA no detecta esa corrupción (por eso se rotula así y no permite retirar el original)', async (t) => {
@@ -216,7 +250,7 @@ test('la verificación RÁPIDA no detecta esa corrupción (por eso se rotula as�
   const dest = makeDest(base);
   // Después de que la copia termina y se fijan las fechas, se altera un byte conservando tamaño y fecha.
   const flip = (name, args) => {
-    if (name === 'utimes' && args[0].includes(`${path.sep}BoneYardDog${path.sep}`) && args[0].endsWith('a.txt')) {
+    if (name === 'utimes' && args[0].includes('.copiando') && args[0].endsWith('a.txt')) {
       const st = fs.statSync(args[0]);
       const b = fs.readFileSync(args[0]);
       b[0] ^= 0xff;
@@ -230,12 +264,11 @@ test('la verificación RÁPIDA no detecta esa corrupción (por eso se rotula as�
   const rq = await quick.engine.run(pq.plan);
   assert.equal(rq.carpetas[0].resultado, 'copiada-verificada', 'QUICK no detecta la corrupción (es su límite documentado)');
   assert.match(rq.avisoVerificacion, /NO el contenido/);
-  const mq = JSON.parse(fs.readFileSync(path.join(rq.batchFolder, 'MANIFIESTO.json'), 'utf8'));
-  assert.match(mq.avisoVerificacion, /RÁPIDA/);
-  assert.ok(mq.carpetas[0].archivos.every((a) => a.sha256 === null));
-  assert.match(fs.readFileSync(path.join(rq.batchFolder, 'LEEME.txt'), 'utf8'), /NO comprueba el contenido/);
-  const vq = await quick.engine.verifyBatch(rq.batchFolder, { mode: 'full' });
-  assert.equal(vq.ok, true, 'ni verifyBatch puede detectarla: el manifiesto rápido no tiene huellas');
+  const recq = await quick.registry.get(rq.carpetas[0].registroId);
+  assert.equal(recq.verificacion, 'quick');
+  assert.ok(recq.archivos.every((a) => a.sha256 === null));
+  const vq = await quick.engine.verifyRecord(recq, { mode: 'full' });
+  assert.equal(vq.estado, 'ok', 'ni verifyRecord puede detectarla: el registro rápido no tiene huellas');
   assert.ok(vq.problemas.every((p) => p.aviso), 'solo avisa que no hay huellas');
 
   // Con la verificación completa, la MISMA alteración sí se detecta.
@@ -254,7 +287,7 @@ test('quick: detecta tamaño o fecha distintos', async (t) => {
   const dest = makeDest(base);
   const { fs: sfs } = spyFs({
     after: (name, args) => {
-      if (name === 'utimes' && args[0].includes(`${path.sep}BoneYardDog${path.sep}`) && args[0].endsWith('a.txt')) fs.appendFileSync(args[0], 'de más');
+      if (name === 'utimes' && args[0].includes('.copiando') && args[0].endsWith('a.txt')) fs.appendFileSync(args[0], 'de más');
     },
   });
   const { engine } = makeEngine(base, { fs: sfs });
@@ -272,7 +305,7 @@ test('mover exige verificación completa (con la rápida es un impedimento)', as
   const pf = await engine.preflight(moveOpts(src, dest, 'papelera', { verify: 'quick' }));
   assert.ok(codes(pf.blockers).includes('mover-requiere-verificacion-completa'));
   assert.equal(pf.plan, null);
-  await assert.rejects(() => engine.run({ version: 1, mode: 'move', verify: 'quick', sources: [], totals: { files: 0, bytes: 0 } }), /verificación completa/);
+  await assert.rejects(() => engine.run({ version: 2, mode: 'move', verify: 'quick', sources: [], totals: { files: 0, bytes: 0 } }), /verificación completa/);
 });
 
 // =============================================================== cambios del origen
@@ -309,7 +342,8 @@ test('el origen cambia DURANTE la copia: el archivo falla, no queda a medias y e
   const c = r.carpetas[0];
   assert.equal(c.resultado, 'con-errores');
   assert.ok(c.errores.some((e) => e.ruta === 'sub/y.txt' && e.codigo === 'CAMBIO_DURANTE'), JSON.stringify(c.errores));
-  assert.equal(fs.existsSync(path.join(c.destino, 'sub', 'y.txt')), false, 'no se deja una copia a medias');
+  assert.deepEqual(fs.readdirSync(dest), [], 'no se deja una copia a medias: la app quitó lo que creó');
+  assert.equal(c.limpieza.limpia, true);
   assert.deepEqual(trashed, []);
   assert.ok(fs.existsSync(src));
 });
@@ -354,7 +388,7 @@ test('un archivo modificado (misma cantidad de archivos) después de copiar tamb
 
 // ================================================================ cancelación y fallos
 
-test('cancelación a mitad: originales intactos, ESTADO "cancelado" y sin restos de archivos a medias', async (t) => {
+test('cancelación a mitad: originales intactos, el destino queda limpio solo y sin copias a medias', async (t) => {
   const base = tmpDir(t);
   const src = makeSource(base, { big: true });
   const dest = makeDest(base);
@@ -373,9 +407,10 @@ test('cancelación a mitad: originales intactos, ESTADO "cancelado" y sin restos
   assert.equal(r.carpetas[0].resultado, 'cancelada');
   assert.deepEqual(trashed, []);
   assert.deepEqual(snapshot(src), before);
-  const estado = JSON.parse(fs.readFileSync(path.join(r.batchFolder, 'ESTADO.json'), 'utf8'));
-  assert.equal(estado.estado, 'cancelado');
-  assert.equal(fs.existsSync(path.join(r.carpetas[0].destino, 'grande.bin')), false, 'el archivo a medias se quitó (lo creó esta operación)');
+  assert.deepEqual(fs.readdirSync(dest), [], 'cancelar deja el destino LIMPIO: ni copia a medias ni carpeta provisional');
+  assert.equal(r.carpetas[0].limpieza.limpia, true);
+  assert.match(r.carpetas[0].motivo, /Cancelada por el usuario\. Se quitó la copia incompleta\. Los originales no se tocaron\./);
+  assert.equal(r.carpetas[0].registroId, null, 'una copia cancelada no se registra');
 });
 
 test('cancelar antes de empezar una carpeta la deja "cancelada" y sin tocar', async (t) => {
@@ -481,8 +516,9 @@ test('archivo bloqueado o sin permiso: error de ESE archivo (la carpeta queda "c
   assert.equal(attempts, 1, 'se intentó UNA vez');
   assert.ok(c.errores.some((e) => e.ruta === 'canción.txt' && e.codigo === 'EACCES' && /Sin permiso para leer/.test(e.mensaje)));
   assert.deepEqual(trashed, []);
-  // Lo demás sí se copió.
-  assert.ok(fs.existsSync(path.join(c.destino, 'a.txt')));
+  // La copia incompleta se quitó sola (no queda nada que parezca una copia buena).
+  assert.deepEqual(fs.readdirSync(dest), []);
+  assert.equal(c.limpieza.limpia, true);
 });
 
 // ==================================================================== preflight
@@ -751,8 +787,6 @@ test('enlaces simbólicos: se omiten, se listan y no se siguen; el original no s
   assert.match(r.carpetas[0].motivo, /Contiene enlaces o elementos que no se copiaron/, 'lo decide la guarda explícita, no solo la nueva lectura del origen');
   assert.deepEqual(trashed, []);
   assert.ok(fs.lstatSync(path.join(src, 'enlace-a-carpeta')).isSymbolicLink(), 'el enlace original sigue ahí');
-  const man = JSON.parse(fs.readFileSync(path.join(r.batchFolder, 'MANIFIESTO.json'), 'utf8'));
-  assert.equal(man.carpetas[0].enlacesOmitidos.length, 2);
 });
 
 test('elementos ilegibles: se listan y el original no se retira (se perdería lo que no se copió)', async (t) => {
@@ -782,7 +816,7 @@ test('"papelera": con la Papelera simulada exitosa el original desaparece y la c
   const src = makeSource(base);
   const dest = makeDest(base);
   const before = snapshot(src);
-  const { engine, trashed } = makeEngine(base);
+  const { engine, trashed, registry } = makeEngine(base);
   const pf = await engine.preflight(moveOpts(src, dest, 'papelera'));
   assert.deepEqual(pf.blockers, []);
   assert.equal(pf.disposal.papelera.verdict, 'probablemente-cabe');
@@ -793,8 +827,8 @@ test('"papelera": con la Papelera simulada exitosa el original desaparece y la c
   assert.equal(fs.existsSync(src), false);
   assert.deepEqual(snapshot(c.destino), before, 'la copia tiene todo');
   assert.equal(r.estado, 'completo');
-  const man = JSON.parse(fs.readFileSync(path.join(r.batchFolder, 'MANIFIESTO.json'), 'utf8'));
-  assert.deepEqual(man.carpetas[0].original, { accion: 'papelera', motivo: null });
+  assert.deepEqual((await registry.get(c.registroId)).original, { accion: 'papelera', motivo: null }, 'el registro anota qué se hizo con el original');
+  assert.deepEqual(fs.readdirSync(dest), [path.basename(src)]);
 });
 
 test('"papelera": si la Papelera falla, el original sigue intacto y se informa', async (t) => {
@@ -904,7 +938,7 @@ test('borrado definitivo, caso feliz: original ausente, copia idéntica, sin pas
   const src = makeSource(base);
   const dest = makeDest(base);
   const before = snapshot(src);
-  const { engine, trashed } = makeEngine(base);
+  const { engine, trashed, registry } = makeEngine(base);
   const pf = await engine.preflight(delOpts(src, dest));
   assert.deepEqual(pf.blockers, []);
   assert.equal(pf.plan.disposal, 'borrar');
@@ -916,9 +950,7 @@ test('borrado definitivo, caso feliz: original ausente, copia idéntica, sin pas
   assert.deepEqual(snapshot(c.destino), before, 'la copia tiene todo, idéntico');
   assert.deepEqual(trashed, [], 'no pasó por la Papelera');
   assert.equal(r.estado, 'completo');
-  const man = JSON.parse(fs.readFileSync(path.join(r.batchFolder, 'MANIFIESTO.json'), 'utf8'));
-  assert.deepEqual(man.carpetas[0].original, { accion: 'borrado-definitivo', motivo: null });
-  assert.equal(man.carpetas[0].resultado, 'original-borrado-definitivamente');
+  assert.deepEqual((await registry.get(c.registroId)).original, { accion: 'borrado-definitivo', motivo: null });
 });
 
 test('borrado definitivo: sin confirmPermanentDelete el preflight lo bloquea, y un plan sin la confirmación no borra', async (t) => {
@@ -1105,7 +1137,7 @@ test('borrado definitivo PARCIAL (fallo a mitad): informa exactamente qué se bo
       }
     },
   });
-  const { engine } = makeEngine(base, { fs: sfs });
+  const { engine, registry } = makeEngine(base, { fs: sfs });
   const pf = await engine.preflight(delOpts(src, dest));
   const planned = pf.plan.sources[0].entries.map((e) => e.rel).sort();
   const r = await engine.run(pf.plan);
@@ -1122,9 +1154,7 @@ test('borrado definitivo PARCIAL (fallo a mitad): informa exactamente qué se bo
   assert.equal(fs.existsSync(path.join(src, 'sub')), false);
   assert.equal(snapshot(c.destino)['sub/hondo/x.bin'].type, 'file');
   assert.equal(r.estado, 'con-errores');
-  const man = JSON.parse(fs.readFileSync(path.join(r.batchFolder, 'MANIFIESTO.json'), 'utf8'));
-  assert.equal(man.carpetas[0].original.accion, 'borrado-parcial');
-  assert.deepEqual(man.carpetas[0].original.restantes.sort(), ['a.txt', 'canción.txt', 'cero.bin', 'vacia']);
+  assert.equal((await registry.get(c.registroId)).original.accion, 'borrado-parcial');
   // No se puede quitar la copia: es lo único que queda de lo borrado.
   await assert.rejects(engine.quitarCopiado(r), /ya se retiró/);
 });
@@ -1143,7 +1173,7 @@ async function papeleraFalla(t, { bigBytes = false, extra = {} } = {}) {
   const dest = makeDest(base);
   const before = snapshot(src);
   const attempts = [];
-  const { engine } = makeEngine(base, {
+  const { engine, registry } = makeEngine(base, {
     trash: async (p) => {
       attempts.push(p);
       throw new Error('Windows rechazó enviar a la Papelera (E_ABORT)');
@@ -1152,11 +1182,11 @@ async function papeleraFalla(t, { bigBytes = false, extra = {} } = {}) {
   });
   const pf = await engine.preflight(moveOpts(src, dest, 'papelera'));
   const r = await engine.run(pf.plan);
-  return { base, src, dest, before, engine, r, attempts };
+  return { base, src, dest, before, engine, r, attempts, registry };
 }
 
 test('la Papelera que falla deja el original, con el código papelera-fallo y el mensaje original; y permite el borrado posterior', async (t) => {
-  const { src, before, engine, r, attempts, dest } = await papeleraFalla(t);
+  const { src, before, engine, r, attempts, dest, registry } = await papeleraFalla(t);
   const c = r.carpetas[0];
   assert.equal(c.resultado, 'original-sin-tocar');
   assert.equal(c.motivoCodigo, 'papelera-fallo');
@@ -1172,14 +1202,10 @@ test('la Papelera que falla deja el original, con el código papelera-fallo y el
   // Con confirmación, el borrado definitivo ocurre.
   const out = await engine.eliminarDefinitivamente(r, [0], { confirm: true });
   assert.equal(out.carpetas[0].resultado, 'original-borrado-definitivamente');
-  assert.equal(out.manifiestoActualizado, true);
   assert.equal(fs.existsSync(src), false);
   assert.deepEqual(snapshot(r.carpetas[0].destino), before, 'la copia sigue idéntica');
   assert.equal(r.carpetas[0].resultado, 'original-borrado-definitivamente', 'el resultado se actualizó');
-  const man = JSON.parse(fs.readFileSync(path.join(r.batchFolder, 'MANIFIESTO.json'), 'utf8'));
-  assert.deepEqual(man.carpetas[0].original, { accion: 'borrado-definitivo', motivo: null });
-  const estado = JSON.parse(fs.readFileSync(path.join(r.batchFolder, 'ESTADO.json'), 'utf8'));
-  assert.equal(estado.carpetas[0].resultado, 'original-borrado-definitivamente');
+  assert.deepEqual((await registry.get(r.carpetas[0].registroId)).original, { accion: 'borrado-definitivo', motivo: null });
   // Una carpeta ya borrada no se puede borrar otra vez.
   await assert.rejects(engine.eliminarDefinitivamente(r, [0], { confirm: true }), /no se puede borrar así/);
   assert.ok(dest);
@@ -1340,44 +1366,66 @@ test('quitarCopiado: quita SOLO lo que creó esta operación y deja lo ajeno', a
   const base = tmpDir(t);
   const src = makeSource(base);
   const dest = makeDest(base);
-  write(path.join(dest, 'foto-del-usuario.jpg'), 'mis fotos'); // ya estaba en el destino
+  write(path.join(dest, 'foto-del-usuario.jpg'), 'mis fotos');
   const before = snapshot(src);
-  const { engine } = makeEngine(base);
+  const { engine, registry } = makeEngine(base);
   const pf = await engine.preflight(copyOpts(src, dest));
   const r = await engine.run(pf.plan);
-  // Un archivo ajeno que aparece DENTRO del lote: no es nuestro.
-  write(path.join(r.carpetas[0].destino, 'sub', 'ajeno.txt'), 'no lo creó BoneYardDog');
+  const c = r.carpetas[0];
+  // Un archivo ajeno que aparece DENTRO de la copia: no es nuestro.
+  write(path.join(c.destino, 'sub', 'ajeno.txt'), 'no lo creó BoneYardDog');
 
   const report = await engine.quitarCopiado(r);
   assert.ok(report.quitados > 0);
   assert.equal(fs.readFileSync(path.join(dest, 'foto-del-usuario.jpg'), 'utf8'), 'mis fotos');
-  assert.equal(fs.readFileSync(path.join(r.carpetas[0].destino, 'sub', 'ajeno.txt'), 'utf8'), 'no lo creó BoneYardDog', 'lo ajeno se queda');
+  assert.equal(fs.readFileSync(path.join(c.destino, 'sub', 'ajeno.txt'), 'utf8'), 'no lo creó BoneYardDog', 'lo ajeno se queda');
   assert.ok(report.omitidos.some((o) => o.motivo === 'no-esta-vacia'));
-  assert.equal(fs.existsSync(path.join(r.carpetas[0].destino, 'a.txt')), false, 'lo propio se quitó');
+  assert.equal(fs.existsSync(path.join(c.destino, 'a.txt')), false, 'lo propio se quitó');
   assert.deepEqual(snapshot(src), before, 'el origen intacto');
-  assert.ok(fs.existsSync(path.join(dest, 'BoneYardDog')), 'la carpeta compartida BoneYardDog no se toca');
+  assert.notEqual(c.resultado, 'copia-quitada', 'sigue como estaba porque no se pudo quitar todo');
+  assert.ok(await registry.get(c.registroId), 'si no se quitó todo, el registro se conserva');
 });
 
-test('quitarCopiado: no sigue enlaces y no sale de su lote', async (t) => {
+test('quitarCopiado: una copia completa y limpia se quita por entero, y su registro también', async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const dest = makeDest(base);
+  const before = snapshot(src);
+  const { engine, registry } = makeEngine(base);
+  const r = await engine.run((await engine.preflight(copyOpts(src, dest))).plan);
+  const c = r.carpetas[0];
+  const report = await engine.quitarCopiado(r);
+  assert.deepEqual(report.omitidos, []);
+  assert.equal(c.resultado, 'copia-quitada');
+  assert.deepEqual(fs.readdirSync(dest), [], 'no queda ni la carpeta');
+  assert.deepEqual(snapshot(src), before);
+  assert.equal(await registry.get(c.registroId), null);
+});
+
+test('quitarCopiado: no sigue enlaces y no sale de la carpeta copiada', async (t) => {
   const base = tmpDir(t);
   const src = makeSource(base);
   const dest = makeDest(base);
   const externo = path.join(base, 'externo');
   write(path.join(externo, 'importante.txt'), 'importante');
+  write(path.join(dest, 'foto.jpg'), 'foto');
   const { engine } = makeEngine(base);
   const r = await engine.run((await engine.preflight(copyOpts(src, dest))).plan);
-  // Registro manipulado: rutas fuera del lote y un enlace dentro del lote.
-  const forged = { ...r, created: [...r.created, { path: path.join(externo, 'importante.txt'), type: 'file' }, { path: path.join(dest, 'foto.jpg'), type: 'file' }, { path: path.join(r.batchFolder, '..', '..', '..', 'otro'), type: 'dir' }] };
-  write(path.join(dest, 'foto.jpg'), 'foto');
+  const c = r.carpetas[0];
+  // Un enlace colocado DENTRO de la copia, hacia fuera: la limpieza no lo sigue.
+  let linked = true;
   try {
-    fs.symlinkSync(externo, path.join(r.batchFolder, 'enlace'), 'dir');
-    forged.created.push({ path: path.join(r.batchFolder, 'enlace'), type: 'dir' }, { path: path.join(r.batchFolder, 'enlace', 'importante.txt'), type: 'file' });
+    fs.symlinkSync(externo, path.join(c.destino, 'enlace'), 'dir');
   } catch {
-    /* sin enlaces en este sistema */
+    linked = false;
   }
-  const report = await engine.quitarCopiado(forged);
-  assert.equal(fs.readFileSync(path.join(externo, 'importante.txt'), 'utf8'), 'importante', 'ni siquiera a través de una carpeta-enlace dentro del lote');
-  assert.equal(fs.readFileSync(path.join(dest, 'foto.jpg'), 'utf8'), 'foto');
+  // Lista de lo creado manipulada: entradas que intentan salir de la copia o pasar por el enlace.
+  const ctx = r._interno.ctxs[0];
+  ctx.created.push({ rel: '../foto.jpg', type: 'file' }, { rel: '../../otro', type: 'dir' });
+  if (linked) ctx.created.push({ rel: 'enlace/importante.txt', type: 'file' }, { rel: 'enlace', type: 'dir' });
+  const report = await engine.quitarCopiado(r);
+  assert.equal(fs.readFileSync(path.join(externo, 'importante.txt'), 'utf8'), 'importante', 'ni siquiera a través de una carpeta-enlace dentro de la copia');
+  assert.equal(fs.readFileSync(path.join(dest, 'foto.jpg'), 'utf8'), 'foto', 'lo de fuera de la copia no se toca');
   assert.ok(report.omitidos.some((o) => o.motivo === 'fuera-del-lote'));
 });
 
@@ -1394,16 +1442,17 @@ test('quitarCopiado se NIEGA si ya se retiró algún original (la copia es lo ú
   await assert.rejects(() => engine.quitarCopiado({}), /no válido/);
 });
 
-test('verifyBatch: lote íntegro, luego detecta un archivo alterado, uno faltante y uno sobrante', async (t) => {
+test('verifyRecord: copia íntegra, luego detecta un archivo alterado, uno faltante y uno sobrante', async (t) => {
   const base = tmpDir(t);
   const src = makeSource(base);
   const dest = makeDest(base);
-  const { engine } = makeEngine(base);
+  const { engine, registry } = makeEngine(base);
   const r = await engine.run((await engine.preflight(copyOpts(src, dest))).plan);
   const copy = r.carpetas[0].destino;
+  const rec = await registry.get(r.carpetas[0].registroId);
 
-  const ok = await engine.verifyBatch(r.batchFolder);
-  assert.equal(ok.ok, true);
+  const ok = await engine.verifyRecord(rec);
+  assert.equal(ok.estado, 'ok');
   assert.equal(ok.verificados, 5);
   assert.deepEqual(ok.problemas, []);
 
@@ -1414,43 +1463,63 @@ test('verifyBatch: lote íntegro, luego detecta un archivo alterado, uno faltant
   fs.utimesSync(altered, st.atime, st.mtime);
   fs.unlinkSync(path.join(copy, 'sub', 'y.txt'));
   write(path.join(copy, 'sobrante.txt'), 'extra');
-  const bad = await engine.verifyBatch(r.batchFolder);
-  assert.equal(bad.ok, false);
+  const bad = await engine.verifyRecord(rec);
+  assert.equal(bad.estado, 'problemas');
   const byFile = Object.fromEntries(bad.problemas.map((p) => [p.ruta.split('/').slice(-1)[0], p.problema]));
   assert.equal(byFile['a.txt'], 'huella');
   assert.equal(byFile['y.txt'], 'falta');
   assert.equal(byFile['sobrante.txt'], 'sobrante');
 
   // El modo rápido (tamaño y fecha) no ve la alteración de a.txt pero sí lo que falta.
-  const quick = await engine.verifyBatch(r.batchFolder, { mode: 'quick' });
+  const quick = await engine.verifyRecord(rec, { mode: 'quick' });
   assert.ok(!quick.problemas.some((p) => p.ruta.endsWith('a.txt')));
   assert.ok(quick.problemas.some((p) => p.problema === 'falta'));
 });
 
-test('verifyBatch: manifiesto ausente, dañado o con rutas que intentan salir del lote', async (t) => {
+test('verifyRecord: NUNCA dice «bien» si no revisó ningún archivo, y distingue disco desconectado y carpeta distinta', async (t) => {
   const base = tmpDir(t);
   const src = makeSource(base);
   const dest = makeDest(base);
-  const { engine } = makeEngine(base);
+  const { engine, registry } = makeEngine(base);
   const r = await engine.run((await engine.preflight(copyOpts(src, dest))).plan);
-  await assert.rejects(() => engine.verifyBatch(path.join(base, 'no-hay-lote')), /No se pudo leer MANIFIESTO/);
-  await assert.rejects(() => engine.verifyBatch(5), /no válida/);
+  const rec = await registry.get(r.carpetas[0].registroId);
 
-  const file = path.join(r.batchFolder, 'MANIFIESTO.json');
-  const good = fs.readFileSync(file, 'utf8');
-  fs.writeFileSync(file, '{ roto');
-  await assert.rejects(() => engine.verifyBatch(r.batchFolder), /No se pudo leer MANIFIESTO/);
-  fs.writeFileSync(file, JSON.stringify({ version: 9 }));
-  await assert.rejects(() => engine.verifyBatch(r.batchFolder), /formato esperado/);
+  // Un registro sin archivos (copia interrumpida, registro vacío): NO es «bien».
+  const vacio = await engine.verifyRecord({ ...rec, archivos: [], carpetasVacias: [] });
+  assert.equal(vacio.verificados, 0);
+  assert.notEqual(vacio.estado, 'ok');
+  assert.equal(vacio.estado, 'problemas', 'la carpeta tiene archivos que el registro no conoce: sobrantes');
+  const vacioDeVerdad = path.join(dest, 'vacia-de-verdad');
+  fs.mkdirSync(vacioDeVerdad);
+  const sinArchivos = await engine.verifyRecord({ ...rec, destino: vacioDeVerdad, archivos: [], carpetasVacias: [] });
+  assert.equal(sinArchivos.estado, 'sin-archivos');
+  assert.match(sinArchivos.motivo, /No había archivos que comprobar/);
 
-  write(path.join(base, 'secreto-fuera.txt'), 'fuera del lote');
-  const m = JSON.parse(good);
-  m.carpetas[0].archivos.push({ ruta: '../../../../secreto-fuera.txt', tamano: 1, mtimeMs: 0, sha256: 'x' }, { ruta: '/etc/passwd', tamano: 1, mtimeMs: 0, sha256: 'x' }, { ruta: 'C:\\Windows\\win.ini', tamano: 1, mtimeMs: 0, sha256: 'x' });
-  m.carpetas.push({ origen: 'x', destino: '../../fuera', resultado: 'copiada-verificada', archivos: [{ ruta: 'a', tamano: 1, mtimeMs: 0, sha256: 'x' }] });
-  fs.writeFileSync(file, JSON.stringify(m));
-  const res = await engine.verifyBatch(r.batchFolder);
-  assert.equal(res.ok, false);
-  assert.equal(res.problemas.filter((p) => p.problema === 'ruta-no-valida').length, 4, 'ninguna ruta peligrosa se sigue');
+  // Disco desconectado / carpeta que ya no está.
+  const gone = await engine.verifyRecord({ ...rec, destino: path.join(dest, 'no-esta') });
+  assert.equal(gone.estado, 'no-disponible');
+  assert.match(gone.motivo, /No encuentro esa carpeta: conecta el disco/);
+  assert.equal(gone.verificados, 0);
+  // Es un archivo en vez de una carpeta.
+  fs.writeFileSync(path.join(dest, 'archivo.txt'), 'x');
+  assert.equal((await engine.verifyRecord({ ...rec, destino: path.join(dest, 'archivo.txt') })).estado, 'distinta');
+  // Registro mal formado.
+  await assert.rejects(() => engine.verifyRecord(null), /no es válido/);
+  await assert.rejects(() => engine.verifyRecord({ destino: 5, archivos: [] }), /no es válido/);
+});
+
+test('verifyRecord: rutas del registro que intentan salir de la copia no se siguen', async (t) => {
+  const base = tmpDir(t);
+  const src = makeSource(base);
+  const dest = makeDest(base);
+  const { engine, registry } = makeEngine(base);
+  const r = await engine.run((await engine.preflight(copyOpts(src, dest))).plan);
+  const rec = await registry.get(r.carpetas[0].registroId);
+  write(path.join(base, 'secreto-fuera.txt'), 'fuera de la copia');
+  const forged = { ...rec, archivos: [...rec.archivos, { ruta: '../../../../secreto-fuera.txt', tamano: 1, mtimeMs: 0, sha256: 'x'.repeat(64) }, { ruta: '/etc/passwd', tamano: 1, mtimeMs: 0, sha256: null }, { ruta: 'C:\\Windows\\win.ini', tamano: 1, mtimeMs: 0, sha256: null }] };
+  const res = await engine.verifyRecord(forged);
+  assert.equal(res.estado, 'problemas');
+  assert.equal(res.problemas.filter((p) => p.problema === 'ruta-no-valida').length, 3, 'ninguna ruta peligrosa se sigue');
 });
 
 // ============================================= la regla de oro, revisada en el código fuente
@@ -1465,7 +1534,7 @@ test('REGLA DE ORO (código fuente): las únicas eliminaciones están en las fun
     }
     return null;
   };
-  const allowed = { removeOwn: ['unlink'], removeCreatedEntry: ['unlink', 'rmdir'], trashOriginal: ['trash'], deleteTree: ['rm'], preflight: ['unlink'] };
+  const allowed = { removeOwn: ['unlink'], removeCreatedEntry: ['unlink', 'rmdir'], trashOriginal: ['trash'], deleteTree: ['rm'], removePendingWork: ['rm'], renameToFinal: ['rename'], preflight: ['unlink'] };
   const found = [];
   lines.forEach((line, i) => {
     if (/^\s*(\/\/|\*|\/\*)/.test(line)) return; // comentarios
@@ -1475,19 +1544,31 @@ test('REGLA DE ORO (código fuente): las únicas eliminaciones están en las fun
   });
   assert.ok(found.length >= 5, 'la revisión encontró las llamadas esperadas');
   for (const f of found) assert.ok((allowed[f.fn] || []).includes(f.kind), `${f.kind} en ${f.fn} (línea ${f.line}) no está permitido`);
-  // Nunca se renombra ni se mueve nada (ya no existe la cuarentena).
-  assert.equal(found.filter((f) => f.kind === 'rename').length, 0);
-  assert.doesNotMatch(source, /fsp\.rename|\.renameSync/);
+  // El ÚNICO cambio de nombre es la carpeta provisional → su nombre final, y nunca toca el origen (sin cuarentena).
+  const renames = found.filter((f) => f.kind === 'rename');
+  assert.equal(renames.length, 1);
+  assert.match(lines[renames[0].line - 1], /fsp\.rename\(workPath, finalPath\)/);
+  assert.doesNotMatch(source, /\.renameSync/);
+  // …y renameToFinal comprueba antes que el nombre final NO existe (nunca sobrescribe).
+  assert.match(source, /async function renameToFinal\(workPath, finalPath\) \{\s*const exists = await fsp\.lstat\(finalPath\)[\s\S]*?if \(exists\) return \{ ok: false[\s\S]*?fsp\.rename\(workPath, finalPath\)/);
+  // Solo se llama tras copiar Y verificar todo (sin errores) y en `run`.
+  const renameCall = source.indexOf('await renameToFinal(workPath, finalPath)');
+  assert.ok(renameCall > 0);
+  assert.ok(source.lastIndexOf('if (errores.length > 0) {', renameCall) > source.lastIndexOf('const live = await walk(workPath', renameCall), 'el renombrado va después de la comparación final y solo si no hay errores');
   // preflight solo puede borrar su propia sonda.
   const probeLines = found.filter((f) => f.fn === 'preflight');
   assert.equal(probeLines.length, 1);
   assert.match(lines[probeLines[0].line - 1], /unlink\(probePath\)/);
-  // Un único borrado recursivo: `fs.rm` con force:false (no sigue enlaces ni calla si algo falta), y nada de librerías de borrado.
+  // Solo dos borrados recursivos, ambos con force:false (no siguen enlaces ni callan si algo falta): el del ORIGEN (tras todas las
+  // comprobaciones) y el de una carpeta «….copiando» de una sesión anterior que el diario de la app anotó.
   const rms = found.filter((f) => f.kind === 'rm');
-  assert.equal(rms.length, 1);
-  assert.match(lines[rms[0].line - 1], /fsp\.rm\(sourcePath, \{ recursive: true, force: false \}\)/);
+  assert.deepEqual(rms.map((f) => f.fn).sort(), ['deleteTree', 'removePendingWork']);
+  assert.match(lines[rms.find((f) => f.fn === 'deleteTree').line - 1], /fsp\.rm\(sourcePath, \{ recursive: true, force: false \}\)/);
+  assert.match(lines[rms.find((f) => f.fn === 'removePendingWork').line - 1], /fsp\.rm\(ruta, \{ recursive: true, force: false \}\)/);
+  const pending = source.slice(source.indexOf('async function removePendingWork'), source.indexOf("await fsp.rm(ruta,"));
+  for (const needle of ['WORK_RE.test(nodePath.basename(ruta))', 'entry.ruta !== ruta', 'isSymbolicLink()', 'realpath(entry.raiz)', 'isProtectedDest(ruta)']) assert.ok(pending.includes(needle), `removePendingWork debe comprobar ${needle}`);
   assert.doesNotMatch(source, /\brimraf\b|force:\s*true|rmSync|fs-extra|trash-cli/);
-  // Cada eliminación de lo propio pasa por una comprobación "dentro de mi lote".
+  // Cada eliminación de lo propio pasa por una comprobación "dentro de mi carpeta".
   assert.match(source, /async function removeOwn[\s\S]*?strictlyInside\(filePath, batchFolder\)/);
   assert.match(source, /async function removeCreatedEntry[\s\S]*?strictlyInside\(p, container\)/);
 
@@ -1496,7 +1577,7 @@ test('REGLA DE ORO (código fuente): las únicas eliminaciones están en las fun
   assert.equal(calls.length, 1);
   assert.equal(enclosing(calls[0].i), 'permanentlyDelete');
   const fn = source.slice(source.indexOf('async function permanentlyDelete'), source.indexOf('await deleteTree('));
-  const order = ['confirm !== true', "verified !== true || verify !== 'full'", 'folder.links.length', 'isProtected(folder.source)', 'sourceChangeReason(folder)', 'copyProblem(folder, destBase, batchFolder, fsName)'];
+  const order = ['confirm !== true', "verified !== true || verify !== 'full'", 'folder.links.length', 'isProtected(folder.source)', 'sourceChangeReason(folder)', 'copyProblem(folder, destBase, destRoot, fsName)'];
   let at = -1;
   for (const needle of order) {
     const idx = fn.indexOf(needle);
@@ -1612,11 +1693,9 @@ test('rutas reales: un enlace inofensivo en medio de la ruta se resuelve, se cop
   assert.equal(r.carpetas[0].resultado, 'copiada-verificada');
   assert.equal(r.carpetas[0].origen, fs.realpathSync(src));
   assert.equal(r.carpetas[0].solicitado, pedido);
-  assert.ok(r.batchFolder.startsWith(fs.realpathSync(real) + path.sep), 'se escribió en la carpeta real');
+  assert.ok(r.carpetas[0].destino.startsWith(fs.realpathSync(real) + path.sep), 'se escribió en la carpeta real');
   assert.deepEqual(snapshot(r.carpetas[0].destino), before);
-  const man = JSON.parse(fs.readFileSync(path.join(r.batchFolder, 'MANIFIESTO.json'), 'utf8'));
-  assert.equal(man.carpetas[0].origen, fs.realpathSync(src));
-  assert.equal(man.destino, fs.realpathSync(real));
+  assert.equal(r.destinoRaiz, fs.realpathSync(real));
 });
 
 test('rutas reales: dos orígenes que son la misma carpeta por caminos distintos cuentan como anidados', async (t) => {

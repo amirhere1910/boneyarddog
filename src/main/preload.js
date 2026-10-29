@@ -35,8 +35,12 @@ contextBridge.exposeInMainWorld('byd', {
   transferCancel: () => ipcRenderer.invoke('byd:transfer-cancel'),
   transferDeleteFromResult: (runId, indices, confirm) => ipcRenderer.invoke('byd:transfer-delete-from-result', runId, indices, confirm),
   transferRemoveCopy: (runId) => ipcRenderer.invoke('byd:transfer-remove-copy', runId),
-  verifyBatchChooseFolder: () => ipcRenderer.invoke('byd:verify-batch-choose-folder'),
-  verifyBatchRun: (options) => ipcRenderer.invoke('byd:verify-batch-run', options),
+  // Copias anteriores (registro en el PC): solo el id de una copia, nunca una ruta de destino.
+  copiesList: () => ipcRenderer.invoke('byd:copies-list'),
+  copiesVerify: (id, options) => ipcRenderer.invoke('byd:copies-verify', id, options),
+  copiesRemove: (id) => ipcRenderer.invoke('byd:copies-remove', id),
+  pendingList: () => ipcRenderer.invoke('byd:pending-list'),
+  pendingClean: (ruta) => ipcRenderer.invoke('byd:pending-clean', ruta),
   // Datos de prueba: ninguna función recibe una ruta (la carpeta es fija y la conoce el proceso principal).
   testDataStatus: () => ipcRenderer.invoke('byd:test-data-status'),
   testDataCreate: () => ipcRenderer.invoke('byd:test-data-create'),

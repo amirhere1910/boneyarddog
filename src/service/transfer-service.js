@@ -23,11 +23,12 @@ class TransferService extends EventEmitter {
    * @param {(p: string) => Promise<void>} [options.trash] Envía a la Papelera (inyectada).
    * @param {() => Worker} [options.workerFactory] Para pruebas.
    * @param {number} [options.progressIntervalMs=200] Separación mínima entre avisos de progreso.
+   * @param {string} [options.registryDir] Carpeta del registro de copias (en el PC, no en el destino).
    */
-  constructor({ trash, workerFactory, progressIntervalMs = 200 } = {}) {
+  constructor({ trash, workerFactory, progressIntervalMs = 200, registryDir = null } = {}) {
     super();
     this._trash = typeof trash === 'function' ? trash : null;
-    this._factory = workerFactory || (() => new Worker(WORKER_FILE, { workerData: { hasTrash: this._trash !== null, progressIntervalMs } }));
+    this._factory = workerFactory || (() => new Worker(WORKER_FILE, { workerData: { hasTrash: this._trash !== null, progressIntervalMs, registryDir } }));
     this._worker = null;
     this._nextId = 1;
     this._pending = new Map();
@@ -106,8 +107,26 @@ class TransferService extends EventEmitter {
     return this._call('cancel');
   }
 
-  verifyBatch(batchFolder, options) {
-    return this._call('verifyBatch', batchFolder, options);
+  /** Vuelve a comprobar una copia anterior (por el id de su registro). */
+  verifyRecord(id, options) {
+    return this._call('verifyRecord', id, options);
+  }
+
+  listRecords() {
+    return this._call('listRecords');
+  }
+
+  removeRecord(id) {
+    return this._call('removeRecord', id);
+  }
+
+  /** Carpetas «….copiando» que quedaron de una sesión anterior (del diario). */
+  listPending() {
+    return this._call('listPending');
+  }
+
+  cleanPending(ruta) {
+    return this._call('cleanPending', ruta);
   }
 
   quitarCopiado(runId) {

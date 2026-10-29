@@ -17,6 +17,7 @@ const crypto = require('node:crypto');
 const { parentPort, workerData } = require('node:worker_threads');
 const { createTransferEngine } = require('../core/transfer');
 const { volumeInfoForPath } = require('../main/volume-info');
+const { createRegistry } = require('../core/registro');
 
 const hasTrash = Boolean(workerData && workerData.hasTrash);
 // Solo la prueba automática lo pasa: las carpetas cuyo nombre empieza así se tratan como si estuvieran en un disco extraíble
@@ -40,7 +41,11 @@ function askMainToTrash(p) {
   });
 }
 
+// El registro (datos para verificar copias más tarde) vive en el PC: este hilo es su ÚNICO escritor.
+const registry = workerData && typeof workerData.registryDir === 'string' && workerData.registryDir !== '' ? createRegistry({ dir: workerData.registryDir }) : null;
+
 const engine = createTransferEngine({
+  registry,
   volumeInfo: async (p) => {
     const info = await volumeInfoForPath(p);
     if (smokeRemovablePrefix && require('node:path').basename(String(p)).startsWith(smokeRemovablePrefix)) return { ...info, driveType: 'removable' };
@@ -74,6 +79,9 @@ function summarizePlan(plan) {
     sources: plan.sources.map((s) => ({
       source: s.source,
       requested: s.requested,
+      finalName: s.finalName,
+      renamed: s.renamed,
+      destino: s.destino,
       files: s.files,
       dirs: s.dirs,
       bytes: s.bytes,
@@ -91,8 +99,7 @@ function summarizeRun(result, runId) {
     abortada: result.abortada,
     verificacion: result.verificacion,
     avisoVerificacion: result.avisoVerificacion,
-    batchFolder: result.batchFolder,
-    lote: result.lote,
+    destinoRaiz: result.destinoRaiz,
     totales: result.totales,
     carpetas: result.carpetas.map(summarizeFolder),
   };
@@ -155,16 +162,53 @@ const handlers = {
     return { cancelled: true };
   },
 
-  async verifyBatch(batchFolder, options = {}) {
+  async verifyRecord(id, options = {}) {
     if (running) throw new ServiceError('Ya hay una transferencia en curso', 'OCUPADO');
+    if (!registry) throw new ServiceError('No hay registro de copias', 'SIN_REGISTRO');
+    const record = await registry.get(id);
+    if (!record) throw new ServiceError('Esa copia no está en el registro (o el registro está dañado)', 'REGISTRO_DESCONOCIDO');
     const mode = options && options.mode === 'quick' ? 'quick' : 'full';
     const controller = new AbortController();
     running = { controller };
     try {
-      return await engine.verifyBatch(batchFolder, { mode, signal: controller.signal, onProgress: (p) => parentPort.postMessage({ type: 'progress', ...p }) });
+      const res = await engine.verifyRecord(record, { mode, signal: controller.signal, onProgress: (p) => parentPort.postMessage({ type: 'progress', ...p }) });
+      return { ...res, nombre: record.nombre, destino: record.destino, origen: record.origen, fecha: record.fecha };
     } finally {
       running = null;
     }
+  },
+
+  /** Lista de copias anteriores (resumen: sin la lista de archivos). */
+  async listRecords() {
+    return registry ? registry.list() : [];
+  },
+
+  async removeRecord(id) {
+    if (!registry) return { quitado: false };
+    return { quitado: await registry.remove(id) };
+  },
+
+  /** Carpetas «….copiando» que esta app dejó a medias (diario) y que todavía existen. */
+  async listPending() {
+    if (!registry) return [];
+    const out = [];
+    for (const p of await registry.listPending()) {
+      const exists = await require('node:fs').promises.lstat(p.ruta).then(() => true, () => false);
+      if (exists) out.push(p);
+      else await registry.removePending(p.ruta);
+    }
+    return out;
+  },
+
+  /** Borra UNA carpeta provisional del diario (el motor comprueba que sea suya). */
+  async cleanPending(ruta) {
+    if (!registry) throw new ServiceError('No hay diario de copias', 'SIN_REGISTRO');
+    if (running) throw new ServiceError('Ya hay una transferencia en curso', 'OCUPADO');
+    const entry = (await registry.listPending()).find((p) => p.ruta === ruta);
+    if (!entry) throw new ServiceError('BoneYardDog no anotó esa carpeta: no se toca', 'NO_ANOTADA');
+    const r = await engine.removePendingWork(ruta, entry);
+    await registry.removePending(ruta);
+    return r;
   },
 
   async quitarCopiado(runId) {

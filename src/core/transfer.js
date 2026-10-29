@@ -5,19 +5,21 @@
  *
  * REGLA DE ORO: este código solo elimina algo del ORIGEN de dos maneras: (a) la Papelera inyectada
  * (`trashOriginal`) o (b) el borrado definitivo (`deleteTree`, solo desde `permanentlyDelete`); y en
- * ambos casos solo tras verificar TODO. La única otra eliminación permitida es quitar archivos y
- * carpetas que ESTA operación creó en el destino (lista registrada, dentro de su carpeta de lote).
- * Las únicas llamadas de eliminación de todo el archivo están en `removeOwn`, `removeCreatedEntry`,
- * `trashOriginal` y `deleteTree`; hay una prueba que lo revisa en el código fuente.
+ * ambos casos solo tras verificar TODO. La única otra eliminación permitida es quitar lo que ESTA
+ * operación creó en el destino: la carpeta provisional «….copiando» y su contenido (lista registrada, sin
+ * seguir enlaces, sin salir de ella), y —con el diario de la app— una carpeta «….copiando» que una sesión
+ * anterior dejó a medias (`removePendingWork`). Las únicas llamadas de eliminación o cambio de nombre de todo el
+ * archivo están en `removeOwn`, `removeCreatedEntry`, `trashOriginal`, `deleteTree`, `removePendingWork` y
+ * `renameToFinal`; hay una prueba que lo revisa en el código fuente.
  *
- * Todo se hace con módulos de Node. Las dependencias se inyectan (`fs`, `volumeInfo`, `trash`,
- * `now`, `env`, `isProtected`) para poder probar cada caso sin tocar discos reales.
+ * Todo se hace con módulos de Node. Las dependencias se inyectan (`fs`, `volumeInfo`, `trash`, `now`,
+ * `env`, `isProtected`, `registry`) para poder probar cada caso sin tocar discos reales.
  *
- * Estructura en el destino:
- *   <destino>\BoneYardDog\<AAAA-MM-DD_HHMM>\<letra de unidad>\<ruta relativa original>
- * con ESTADO.json, MANIFIESTO.json y LEEME.txt dentro de la carpeta de lote. Nunca sobrescribe:
- * los archivos se abren con 'wx' y las carpetas se crean sin `recursive` (si algo existe, es un
- * error de ese elemento).
+ * Destino: para cada origen `X:\ruta\Fotos` queda `<destino>\Fotos` (solo el nombre de la carpeta, tal cual estaba, y
+ * NINGÚN archivo más). Se copia a `<destino>\Fotos.copiando` y SOLO cuando todo quedó copiado y verificado se
+ * renombra a `Fotos` (sin sobrescribir nunca: si ya existe algo con ese nombre, se usa `Fotos (2)`). Una copia a medias,
+ * cancelada o interrumpida nunca parece una copia buena: queda con la extensión `.copiando`. Los datos de
+ * verificación (huellas SHA-256…) se guardan en el PC (registro), no en el destino.
  */
 
 const nodePath = require('node:path');
@@ -28,8 +30,8 @@ const R = require('./transfer-rules');
 
 const CHUNK = 1024 * 1024;
 const MAX_SOURCES = 500;
-const BATCH_DIR = 'BoneYardDog';
-const SIDE_FILES = new Set(['ESTADO.json', 'MANIFIESTO.json', 'LEEME.txt']);
+/** Carpeta provisional: «Fotos.copiando» (o «Fotos.copiando (2)» si ya existía). */
+const WORK_RE = /\.copiando(?: \(\d+\))?$/i;
 const FATAL_IO = new Set(['ENODEV', 'EIO', 'ENXIO', 'UNKNOWN', 'ENOTCONN', 'ESHUTDOWN']);
 
 class FatalTransferError extends Error {
@@ -49,11 +51,19 @@ class AbortedError extends Error {
 
 // ---------------------------------------------------------------- utilidades puras
 
-const pad = (n) => String(n).padStart(2, '0');
-
-function batchName(ms) {
-  const d = new Date(ms);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
+/**
+ * Nombre final y provisional libres para una carpeta: «Fotos», «Fotos (2)»… y «Fotos.copiando», «Fotos.copiando (2)»…
+ * `taken` (nombres en minúsculas ya ocupados) se actualiza con lo elegido.
+ */
+function pickNames(base, taken) {
+  const has = (n) => taken.has(n.toLowerCase());
+  let finalName = base;
+  for (let n = 2; has(finalName); n++) finalName = `${base} (${n})`;
+  let workName = `${finalName}.copiando`;
+  for (let m = 2; has(workName); m++) workName = `${finalName}.copiando (${m})`;
+  taken.add(finalName.toLowerCase());
+  taken.add(workName.toLowerCase());
+  return { finalName, workName, renamed: finalName !== base };
 }
 
 /** Parte una ruta absoluta en carpeta de unidad y nombres (respetando mayúsculas). */
@@ -85,31 +95,6 @@ function classify(err, side) {
 /** Estrictamente dentro (no la misma ruta). */
 const strictlyInside = (child, parent) => R.isInside(child, parent) && !R.isInside(parent, child);
 
-function leemeBatch({ fecha, modo, verificacion, destino }) {
-  return [
-    'BONEYARDDOG — COPIA DE CARPETAS',
-    '',
-    `Esta carpeta la creó BoneYardDog el ${fecha}.`,
-    `Contiene copias de carpetas de tu equipo (modo: ${modo === 'move' ? 'transferir (copiar y retirar el original)' : 'copiar'}).`,
-    `Verificación: ${verificacion === 'full' ? 'completa (se comparó el contenido de cada archivo con una huella SHA-256)' : 'RÁPIDA (solo tamaño y fecha: NO comprueba el contenido)'}.`,
-    '',
-    'QUÉ HAY AQUÍ',
-    '  · Una carpeta por cada unidad de origen (C, D, …) y dentro la ruta original de cada carpeta.',
-    '  · ESTADO.json: cómo terminó la operación (completo, con errores o cancelado).',
-    '  · MANIFIESTO.json: la lista de archivos con tamaño, fecha y huella, y qué se hizo con cada original.',
-    '',
-    'CÓMO RESTAURAR',
-    '  Copia de vuelta la carpeta que necesites al lugar que quieras, con el Explorador de Windows.',
-    '',
-    'CÓMO VERIFICAR',
-    '  Abre BoneYardDog y usa «Verificar un lote». Compara de nuevo cada archivo con el MANIFIESTO.',
-    '  Conviene hacerlo después de expulsar y volver a conectar el disco.',
-    '',
-    `Ubicación: ${destino}`,
-    '',
-  ].join('\r\n');
-}
-
 // ---------------------------------------------------------------------- el motor
 
 function createTransferEngine(deps = {}) {
@@ -126,7 +111,8 @@ function createTransferEngine(deps = {}) {
     return why || `«${real || p}» es una ruta protegida del sistema: elige otra carpeta.`;
   };
   const env = deps.env || process.env;
-  const appVersion = deps.appVersion || '0.0.0';
+  const appVersion = deps.appVersion || '0.0.0'; // eslint-disable-line no-unused-vars
+  const registry = deps.registry || null; // { save, update, remove, addPending, removePending }: el registro vive en el PC
 
   /** ¿La ruta real de `p` sigue siendo `p`? (si un enlace o punto de unión la desvió, no). */
   async function stillItsOwnRealPath(p) {
@@ -156,7 +142,7 @@ function createTransferEngine(deps = {}) {
   }
 
   /** Quita UN archivo que esta operación creó (lo registrado), solo dentro de su lote. */
-  async function removeOwn(filePath, batchFolder) {
+  async function removeOwn(filePath, batchFolder) { // batchFolder: la carpeta propia dentro de la cual se puede quitar
     if (!strictlyInside(filePath, batchFolder) || !(await parentReallyInside(filePath, batchFolder))) return false;
     let st;
     try {
@@ -276,15 +262,15 @@ function createTransferEngine(deps = {}) {
 
   /**
    * ¿La copia de esta carpeta sigue completa en el destino? Comprueba que la carpeta de la copia está
-   * REALMENTE dentro del lote (y no es el origen visto por un enlace) y, para cada elemento, que existe
+   * REALMENTE dentro del destino elegido (y no es el origen visto por un enlace) y, para cada elemento, que existe
    * con el mismo tipo, tamaño y fecha. No relee el contenido (eso ya lo hizo la verificación completa).
    * Devuelve null si está completa, o el motivo.
    */
-  async function copyProblem(folder, destBase, batchFolder, fsName) {
+  async function copyProblem(folder, destBase, destRoot, fsName) {
     try {
-      const realBatch = await fsp.realpath(batchFolder);
+      const realRoot = await fsp.realpath(destRoot);
       const realDest = await fsp.realpath(destBase);
-      if (!R.isInside(realDest, realBatch) || R.isInside(realDest, folder.source) || R.isInside(folder.source, realDest)) return 'la carpeta de la copia ya no está donde debe';
+      if (!strictlyInside(realDest, realRoot) || R.isInside(realDest, folder.source) || R.isInside(folder.source, realDest)) return 'la carpeta de la copia ya no está donde debe';
     } catch {
       return 'no se encuentra la carpeta de la copia';
     }
@@ -326,7 +312,7 @@ function createTransferEngine(deps = {}) {
    * Si falla a mitad, informa exactamente qué se borró y qué no, y NO reintenta.
    * @returns {Promise<{estado: 'borrado'|'parcial'|'sin-tocar', motivo?: string, codigo?: string, borrados?: string[], restantes?: string[], error?: string}>}
    */
-  async function permanentlyDelete({ folder, destBase, batchFolder, verified, verify, confirm, fsName }) {
+  async function permanentlyDelete({ folder, destBase, destRoot, verified, verify, confirm, fsName }) {
     const keep = (motivo, codigo) => ({ estado: 'sin-tocar', motivo, codigo });
     if (confirm !== true) return keep('Falta la confirmación del borrado definitivo: el original sigue donde estaba', 'sin-confirmacion');
     if (verified !== true || verify !== 'full') return keep('La copia no está verificada por completo: el original sigue donde estaba', 'copia-no-verificada');
@@ -336,7 +322,7 @@ function createTransferEngine(deps = {}) {
     if (isProtected(folder.source)) return keep('La carpeta está protegida por el sistema (se volvió a comprobar antes de borrarla)', 'protegida');
     const changed = await sourceChangeReason(folder);
     if (changed) return keep(`El origen cambió desde que se planificó (${changed}): no se toca`, 'origen-cambio');
-    const lost = await copyProblem(folder, destBase, batchFolder, fsName);
+    const lost = await copyProblem(folder, destBase, destRoot, fsName);
     if (lost) return keep(`La copia en el destino ya no está completa (${lost}): el original NO se borra`, 'copia-incompleta');
     let failure = null;
     try {
@@ -349,25 +335,25 @@ function createTransferEngine(deps = {}) {
     return { estado: 'parcial', ...partial, error: partial.error || 'El sistema terminó, pero la carpeta sigue ahí' };
   }
 
-  /** Aplica el resultado de `permanentlyDelete` a la fila de resultado y a la del manifiesto. */
-  function applyDeleteOutcome(result, man, out) {
+  /** Aplica el resultado de `permanentlyDelete` a la fila de resultado. Devuelve qué se hizo con el original (para el registro). */
+  function applyDeleteOutcome(result, out) {
     result.motivoCodigo = null;
     result.borradoParcial = null;
     if (out.estado === 'borrado') {
       result.resultado = 'original-borrado-definitivamente';
       result.motivo = null;
-      man.original = { accion: 'borrado-definitivo', motivo: null };
-    } else if (out.estado === 'parcial') {
+      return { accion: 'borrado-definitivo', motivo: null };
+    }
+    if (out.estado === 'parcial') {
       result.resultado = 'borrado-parcial';
       result.motivo = `El borrado se detuvo a medias (${out.error}). Se borraron ${out.borrados.length} elementos y quedaron ${out.restantes.length}. No se reintentó: la copia en el destino está completa.`;
       result.borradoParcial = { borrados: out.borrados, restantes: out.restantes, error: out.error };
-      man.original = { accion: 'borrado-parcial', motivo: result.motivo, borrados: out.borrados, restantes: out.restantes, error: out.error };
-    } else {
-      result.resultado = 'original-sin-tocar';
-      result.motivo = out.motivo;
-      result.motivoCodigo = out.codigo;
-      man.original = { accion: 'sin-tocar', motivo: out.motivo };
+      return { accion: 'borrado-parcial', motivo: result.motivo };
     }
+    result.resultado = 'original-sin-tocar';
+    result.motivo = out.motivo;
+    result.motivoCodigo = out.codigo;
+    return { accion: 'sin-tocar', motivo: out.motivo };
   }
 
   // -------------------------------------------------------------------- preflight
@@ -534,12 +520,17 @@ function createTransferEngine(deps = {}) {
     const badNames = [];
     const manyEntries = [];
     const longPaths = [];
-    const name0 = batchName(now());
-    const batchPlanned = nodePath.join(destEff, BATCH_DIR, name0);
+    // Nombres finales: solo el nombre de la carpeta; si ya existe algo igual (o dos orígenes se llaman igual), «Fotos (2)».
+    const taken = new Set((await fsp.readdir(destEff).catch(() => [])).map((n) => n.toLowerCase()));
+    const existing = new Set(taken); // lo que YA estaba en el destino (para explicar por qué se renombra)
+    const renamedList = [];
     const planSources = effList.map((s, i) => {
       const w = walks[i];
-      const { drive, parts } = splitAbsolute(s);
-      const destBase = nodePath.join(batchPlanned, drive, ...parts);
+      const baseName = nodePath.basename(s);
+      const alreadyThere = existing.has(baseName.toLowerCase());
+      const names = pickNames(baseName, taken);
+      if (names.renamed) renamedList.push({ origen: s, nombre: baseName, guardadoComo: names.finalName, motivo: alreadyThere ? 'ya-existe' : 'repetido' });
+      const destBase = nodePath.join(destEff, names.finalName);
       let sFiles = 0;
       let sDirs = 0;
       let sBytes = 0;
@@ -556,19 +547,20 @@ function createTransferEngine(deps = {}) {
           if (limits.maxFileBytes !== null && e.size > limits.maxFileBytes) tooBig.push({ ruta: nodePath.join(s, ...e.rel.split('/')), bytes: e.size });
           if (limits.warnFileAtLeastBytes !== null && e.size >= limits.warnFileAtLeastBytes) warnBig.push({ ruta: nodePath.join(s, ...e.rel.split('/')), bytes: e.size });
         } else sDirs++;
-        const destPath = relToPath(destBase, e.rel);
+        // La ruta más larga es la de la carpeta provisional (lleva «.copiando»): se avisa con ella.
+        const destPath = relToPath(nodePath.join(destEff, names.workName), e.rel);
         if (R.checkPathLength(destPath).warning) longPaths.push(destPath);
       }
-      for (const [parent, names] of byParent) {
-        for (const name of names) {
-          const problems = R.checkName(name, fsName, { siblings: names });
+      for (const [parent, nameList] of byParent) {
+        for (const name of nameList) {
+          const problems = R.checkName(name, fsName, { siblings: nameList });
           if (problems.length) badNames.push({ ruta: relToPath(s, parent), nombre: name, problemas: problems.map((p) => p.message) });
         }
-        if (limits.maxEntriesPerFolder !== null && names.length > limits.maxEntriesPerFolder) manyEntries.push({ ruta: relToPath(s, parent), entradas: names.length });
+        if (limits.maxEntriesPerFolder !== null && nameList.length > limits.maxEntriesPerFolder) manyEntries.push({ ruta: relToPath(s, parent), entradas: nameList.length });
       }
-      for (const part of parts) {
-        const problems = R.checkName(part, fsName);
-        if (problems.length) badNames.push({ ruta: s, nombre: part, problemas: problems.map((p) => p.message) });
+      for (const nm of [names.finalName, names.workName]) {
+        const problems = R.checkName(nm, fsName);
+        if (problems.length) badNames.push({ ruta: s, nombre: nm, problemas: problems.map((p) => p.message) });
       }
       files += sFiles;
       dirs += sDirs + 1;
@@ -577,8 +569,11 @@ function createTransferEngine(deps = {}) {
         index: i,
         source: s, // ruta REAL
         requested: givenList[i], // la que se pidió
-        driveFolder: drive,
-        destParts: [drive, ...parts],
+        baseName,
+        finalName: names.finalName,
+        workName: names.workName,
+        renamed: names.renamed,
+        destino: destBase,
         files: sFiles,
         dirs: sDirs,
         bytes: sBytes,
@@ -589,6 +584,13 @@ function createTransferEngine(deps = {}) {
         special: w.special,
       };
     });
+    if (renamedList.length) {
+      warn(
+        'renombrado-por-nombre-existente',
+        renamedList.map((r) => `Se guardará como «${r.guardadoComo}» porque ${r.motivo === 'ya-existe' ? 'ya existe algo con ese nombre en el destino' : 'otra carpeta elegida se llama igual'}.`).join(' '),
+        { carpetas: renamedList },
+      );
+    }
 
     if (tooBig.length) {
       block('archivo-demasiado-grande', `El destino está en formato ${fsName}, que no admite archivos de más de 4 GB. Elige otro destino o reformatea el disco a exFAT o NTFS (se borra todo lo que tenga).`, { archivos: tooBig.slice(0, 20), cantidad: tooBig.length });
@@ -653,14 +655,13 @@ function createTransferEngine(deps = {}) {
     }
 
     const plan = {
-      version: 1,
+      version: 2,
       mode,
       verify,
       disposal: disposalInfo.elegida,
       confirmPermanentDelete: disposalInfo.elegida === 'borrar' && confirmPermanentDelete === true,
       recycleVerdict: disposalInfo.papelera ? disposalInfo.papelera.verdict : null,
       destinationRoot: destEff, // ruta REAL
-      batchName: name0,
       fileSystem: fsName,
       sources: planSources,
       totals: { files, dirs, bytes },
@@ -670,24 +671,50 @@ function createTransferEngine(deps = {}) {
 
   // -------------------------------------------------------------------------- run
 
+  /** Quita lo que ESTA operación creó bajo `root` (lista registrada), sin seguir enlaces y sin salir de `root`. */
+  async function removeCreated(created, root, container) {
+    const rep = { quitados: 0, omitidos: [] };
+    const note = (r, p) => {
+      if (r === 'quitado') rep.quitados++;
+      else if (r !== 'ya-no-esta') rep.omitidos.push({ ruta: p, motivo: r });
+    };
+    const files = created.filter((c) => c.type === 'file');
+    const dirs = created.filter((c) => c.type === 'dir').sort((a, b) => b.rel.split('/').length - a.rel.split('/').length);
+    for (const e of [...files, ...dirs]) {
+      const p = relToPath(root, e.rel);
+      note(await removeCreatedEntry({ path: p, type: e.type }, root), p);
+    }
+    note(await removeCreatedEntry({ path: root, type: 'dir' }, container), root);
+    rep.limpio = rep.omitidos.length === 0 && !(await fsp.lstat(root).then(() => true, () => false));
+    return rep;
+  }
+
+  /** Una operación sobre un disco que no responde no puede colgar la limpieza: se da por fallida a los `ms`. */
+  function withTimeout(promise, ms) {
+    let timer;
+    return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Sin respuesta del disco')), ms); if (timer.unref) timer.unref(); })]).finally(() => clearTimeout(timer));
+  }
+
   /**
-   * Ejecuta un plan de `preflight`. NUNCA sobrescribe. Devuelve el resultado completo (ver README del motor).
+   * Ejecuta un plan de `preflight`. NUNCA sobrescribe. Cada carpeta se copia a `<destino>\<nombre>.copiando` y SOLO cuando
+   * TODA ella quedó copiada y verificada se renombra a `<destino>\<nombre>` (mismo volumen). Si algo falla o se cancela, el
+   * motor quita lo que creó (la carpeta provisional y su contenido). En el destino no se escribe nada más que la carpeta.
    * @param {object} plan
-   * @param {{onProgress?: Function, signal?: AbortSignal, progressIntervalMs?: number}} [opts]
+   * @param {{onProgress?: Function, signal?: AbortSignal, progressIntervalMs?: number, hooks?: object}} [opts]
    */
   async function run(plan, { onProgress, signal, progressIntervalMs = 200, hooks = {} } = {}) {
     // `hooks` existe SOLO para pruebas (simular que algo cambia en un momento exacto).
-    if (!plan || plan.version !== 1 || !Array.isArray(plan.sources) || !['copy', 'move'].includes(plan.mode) || !['full', 'quick'].includes(plan.verify)) {
+    if (!plan || plan.version !== 2 || !Array.isArray(plan.sources) || !['copy', 'move'].includes(plan.mode) || !['full', 'quick'].includes(plan.verify)) {
       throw new Error('Plan no válido: hay que usar el que devuelve preflight()');
     }
     if (plan.mode === 'move' && plan.verify !== 'full') throw new Error('Para retirar el original hace falta la verificación completa');
     const startedAt = now();
-    const created = []; // todo lo que ESTA operación creó: { path, type }
     const fsName = plan.fileSystem || 'desconocido';
+    const destRoot = plan.destinationRoot;
     const results = [];
+    const ctxs = [];
     let fatal = null;
     let cancelled = false;
-    let batchFolder = null;
     const totalBytes = plan.totals.bytes;
     const totalFiles = plan.totals.files;
     let overallBytes = 0;
@@ -718,64 +745,21 @@ function createTransferEngine(deps = {}) {
       });
     }
 
-    // ---- lote
-    const batchParent = nodePath.join(plan.destinationRoot, BATCH_DIR);
-    await fsp.mkdir(batchParent, { recursive: true }).catch((err) => {
-      throw new FatalTransferError(`No se pudo crear la carpeta de BoneYardDog en el destino (${err.code || err.message})`, err.code);
+    const journalAdd = async (ruta, origen) => {
+      if (registry && registry.addPending) await registry.addPending({ ruta, raiz: destRoot, origen }).catch(() => {});
+    };
+    const journalRemove = async (ruta) => {
+      if (registry && registry.removePending) await registry.removePending(ruta).catch(() => {});
+    };
+
+    // El destino debe seguir ahí antes de empezar.
+    await fsp.stat(destRoot).catch((err) => {
+      throw new FatalTransferError(`El destino no está disponible (${err.code || err.message})`, err.code);
     });
-    let unique = plan.batchName;
-    for (let n = 2; ; n++) {
-      try {
-        await fsp.mkdir(nodePath.join(batchParent, unique));
-        break;
-      } catch (err) {
-        if (err.code === 'EEXIST') {
-          unique = `${plan.batchName}-${n}`;
-          continue;
-        }
-        throw new FatalTransferError(`No se pudo crear la carpeta del lote (${err.code || err.message})`, err.code);
-      }
-    }
-    batchFolder = nodePath.join(batchParent, unique);
-    created.push({ path: batchParent, type: 'dir', shared: true }, { path: batchFolder, type: 'dir' });
+    // Nombres ocupados AHORA (el plan pudo quedar viejo): nunca se mezcla con algo existente.
+    const taken = new Set((await fsp.readdir(destRoot).catch(() => [])).map((n) => n.toLowerCase()));
 
-    async function writeSide(name, content) {
-      const p = nodePath.join(batchFolder, name);
-      try {
-        const existed = created.some((c) => c.path === p);
-        await fsp.writeFile(p, content, { flag: 'w' }); // archivo propio de esta operación
-        if (!existed) created.push({ path: p, type: 'file' });
-      } catch (err) {
-        throw new FatalTransferError(`No se pudo escribir ${name} en el destino (${err.code || err.message})`, err.code);
-      }
-    }
-
-    const stamp = new Date(startedAt).toISOString();
-    const manifest = {
-      version: 1,
-      app: { nombre: 'BoneYardDog', version: appVersion },
-      fecha: stamp,
-      modo: plan.mode,
-      verificacion: plan.verify,
-      avisoVerificacion: plan.verify === 'quick' ? 'Verificación RÁPIDA: solo comprueba tamaño y fecha, NO el contenido.' : null,
-      destino: plan.destinationRoot,
-      lote: unique,
-      sistemaDeArchivos: fsName,
-      carpetas: [],
-    };
-    const estado = { version: 1, estado: 'en-curso', modo: plan.mode, verificacion: plan.verify, inicio: stamp, fin: null, carpetas: [] };
-    await writeSide('LEEME.txt', leemeBatch({ fecha: stamp, modo: plan.mode, verificacion: plan.verify, destino: batchFolder }));
-    await writeSide('ESTADO.json', JSON.stringify(estado, null, 2));
-    await writeSide('MANIFIESTO.json', JSON.stringify(manifest, null, 2));
-
-    const saveProgress = async () => {
-      estado.carpetas = results.map((r) => ({ origen: r.origen, resultado: r.resultado }));
-      manifest.carpetas = results.map((r) => r.manifest);
-      await writeSide('ESTADO.json', JSON.stringify(estado, null, 2));
-      await writeSide('MANIFIESTO.json', JSON.stringify(manifest, null, 2));
-    };
-
-    // ---- copia de un archivo
+    // ---- copia de un archivo (a la carpeta provisional)
     async function copyOne(srcPath, destPath, entry, ctx) {
       const before = await fsp.lstat(srcPath).catch((err) => {
         throw Object.assign(new Error('origen no legible'), { code: err.code, side: 'source' });
@@ -794,7 +778,7 @@ function createTransferEngine(deps = {}) {
             throw Object.assign(err, { side: ['EEXIST', 'ENOSPC', 'EROFS'].includes(err.code) ? 'dest' : 'source' });
           }
           destCreated = true;
-          created.push({ path: destPath, type: 'file' });
+          ctx.created.push({ rel: entry.rel, type: 'file' });
           const h = await fsp.open(destPath, 'r+');
           try {
             await h.sync();
@@ -814,7 +798,7 @@ function createTransferEngine(deps = {}) {
               throw Object.assign(err, { side: 'dest' });
             });
             destCreated = true;
-            created.push({ path: destPath, type: 'file' });
+            ctx.created.push({ rel: entry.rel, type: 'file' });
             const hash = crypto.createHash('sha256');
             const buf = Buffer.allocUnsafe(CHUNK);
             let pos = 0;
@@ -864,7 +848,7 @@ function createTransferEngine(deps = {}) {
         }
         return sha;
       } catch (err) {
-        if (destCreated) await removeOwn(destPath, batchFolder).catch(() => {}); // lo que quedó a medias lo creamos nosotros
+        if (destCreated) await removeOwn(destPath, ctx.workPath).catch(() => {}); // lo que quedó a medias lo creamos nosotros
         throw err;
       }
     }
@@ -894,68 +878,65 @@ function createTransferEngine(deps = {}) {
       if (fatal || cancelled) {
         results.push({
           origen: folder.source,
+          solicitado: folder.requested || folder.source,
+          nombreFinal: folder.finalName,
           resultado: 'cancelada',
-          motivo: fatal ? `Se detuvo toda la operación: ${fatal.message}` : 'Cancelada por el usuario antes de empezar esta carpeta',
-          manifest: { origen: folder.source, destino: folder.destParts.join('/'), resultado: 'cancelada', archivos: [], carpetasVacias: [], errores: [], original: { accion: 'sin-tocar', motivo: 'la operación no llegó a esta carpeta' } },
+          motivo: fatal ? `Se detuvo toda la operación: ${fatal.message}` : 'Cancelada antes de empezar esta carpeta. No se tocó nada.',
+          motivoCodigo: null,
+          verificada: false,
+          verificacion: plan.verify,
+          errores: [],
+          limpieza: null,
         });
+        ctxs.push(null);
         continue;
       }
-      const destBase = nodePath.join(batchFolder, ...folder.destParts);
-      const ctx = { origen: folder.source, index: folder.index, bytes: 0, files: 0, totalBytes: folder.bytes, totalFiles: folder.files };
+      const names = pickNames(folder.baseName, taken);
+      const finalPath = nodePath.join(destRoot, names.finalName);
+      const workPath = nodePath.join(destRoot, names.workName);
+      const ctx = { origen: folder.source, index: folder.index, bytes: 0, files: 0, totalBytes: folder.bytes, totalFiles: folder.files, workPath, finalPath, root: workPath, created: [], workCreated: false, renamed: false, keepWork: false };
+      ctxs.push(ctx);
       const errores = [];
       const archivos = [];
       const fileHashes = new Map();
       const result = {
         origen: folder.source,
         solicitado: folder.requested || folder.source,
-        destino: destBase,
+        nombreFinal: names.finalName,
+        destino: finalPath,
+        carpetaProvisional: workPath,
         resultado: 'copiada-verificada',
         motivo: null,
         motivoCodigo: null,
         verificada: false,
         verificacion: plan.verify,
         errores,
+        limpieza: null,
+        registroId: null,
       };
-      const man = {
-        origen: folder.source,
-        origenSolicitado: folder.requested || folder.source,
-        destino: folder.destParts.join('/'),
-        resultado: null,
-        archivos,
-        carpetasVacias: [],
-        enlacesOmitidos: folder.links.map((l) => l.ruta),
-        ilegibles: folder.unreadable,
-        especiales: folder.special.map((x) => x.ruta),
-        errores,
-        original: { accion: 'sin-tocar', motivo: null },
-      };
-      result.manifest = man;
       const addError = (rel, err, fallback) => {
         const c = err && err.custom ? { message: err.message, code: err.code } : classify(err, err && err.side);
         errores.push({ ruta: rel, codigo: c.code, mensaje: fallback || c.message });
         return c;
       };
+      let dirEntries = [];
 
       try {
-        // Contenedor y carpetas.
         throwIfAborted();
-        for (let i = 1; i <= folder.destParts.length; i++) {
-          const p = nodePath.join(batchFolder, ...folder.destParts.slice(0, i));
-          if (created.some((c) => c.path === p)) continue;
-          try {
-            await fsp.mkdir(p);
-            created.push({ path: p, type: 'dir' });
-          } catch (err) {
-            throw Object.assign(err, { side: 'dest' });
-          }
+        try {
+          await fsp.mkdir(workPath); // sin recursive: si algo apareció con ese nombre, es un error
+        } catch (err) {
+          throw Object.assign(err, { side: 'dest' });
         }
-        const dirEntries = folder.entries.filter((e) => e.type === 'dir');
+        ctx.workCreated = true;
+        await journalAdd(workPath, folder.source);
+        dirEntries = folder.entries.filter((e) => e.type === 'dir');
         for (const d of dirEntries) {
           throwIfAborted();
-          const p = relToPath(destBase, d.rel);
+          const p = relToPath(workPath, d.rel);
           try {
             await fsp.mkdir(p);
-            created.push({ path: p, type: 'dir' });
+            ctx.created.push({ rel: d.rel, type: 'dir' });
           } catch (err) {
             const c = classify(Object.assign(err, { side: 'dest' }), 'dest');
             if (c.fatal) throw Object.assign(err, { side: 'dest' });
@@ -968,7 +949,7 @@ function createTransferEngine(deps = {}) {
         for (const e of fileEntries) {
           throwIfAborted();
           const srcPath = relToPath(folder.source, e.rel);
-          const destPath = relToPath(destBase, e.rel);
+          const destPath = relToPath(workPath, e.rel);
           if (hooks.beforeFile) await hooks.beforeFile({ srcPath, destPath, entry: e, folder });
           try {
             const sha = await copyOne(srcPath, destPath, e, ctx);
@@ -991,7 +972,7 @@ function createTransferEngine(deps = {}) {
         if (errores.length === 0) {
           for (const e of fileEntries) {
             throwIfAborted();
-            const destPath = relToPath(destBase, e.rel);
+            const destPath = relToPath(workPath, e.rel);
             const srcRec = archivos.find((a) => a.ruta === e.rel);
             emit({ fase: 'verificando', carpeta: folder.source, carpetaIndice: folder.index, archivo: destPath, bytesDone: ctx.bytes, bytesTotal: ctx.totalBytes, filesDone: ctx.files, filesTotal: ctx.totalFiles });
             try {
@@ -1020,21 +1001,21 @@ function createTransferEngine(deps = {}) {
           }
         }
 
-        // Carpetas: fechas (de las hojas hacia la raíz) y comparación de contenido del destino con el plan.
+        // Carpetas: fechas (de las hojas hacia la raíz) y comparación del contenido del destino con el plan.
         for (const d of [...dirEntries].sort((a, b) => b.rel.split('/').length - a.rel.split('/').length)) {
           try {
-            await fsp.utimes(relToPath(destBase, d.rel), d.mtimeMs / 1000, d.mtimeMs / 1000);
+            await fsp.utimes(relToPath(workPath, d.rel), d.mtimeMs / 1000, d.mtimeMs / 1000);
           } catch {
             /* la fecha de una carpeta no es crítica */
           }
         }
         try {
-          await fsp.utimes(destBase, folder.mtimeMs / 1000, folder.mtimeMs / 1000);
+          await fsp.utimes(workPath, folder.mtimeMs / 1000, folder.mtimeMs / 1000);
         } catch {
           /* idem */
         }
         {
-          const live = await walk(destBase, { checkProtected: false });
+          const live = await walk(workPath, { checkProtected: false });
           const want = new Map(folder.entries.map((e) => [e.rel, e]));
           const failedRels = new Set(errores.map((x) => x.ruta));
           let gotBytes = 0;
@@ -1052,43 +1033,103 @@ function createTransferEngine(deps = {}) {
             errores.push({ ruta: '', codigo: 'TOTALES', mensaje: 'Las cantidades o los bytes del destino no coinciden con el plan' });
           }
         }
-        man.carpetasVacias = folder.entries.filter((e) => e.type === 'dir').map((e) => e.rel);
 
         if (errores.length > 0) {
           result.resultado = 'con-errores';
-          result.motivo = `${errores.length} problema(s): el original no se toca`;
+          result.motivo = `${errores.length} problema(s) al copiar o verificar. El original no se tocó.`;
         } else {
-          result.verificada = true;
+          throwIfAborted();
+          if (hooks.beforeRename) await hooks.beforeRename({ folder, workPath, finalPath }); // solo pruebas
+          // ---- TODO copiado y verificado: la carpeta provisional pasa a su nombre final (nunca sobrescribe)
+          const outcome = await renameToFinal(workPath, finalPath);
+          if (outcome.ok) {
+            ctx.renamed = true;
+            ctx.root = finalPath;
+            result.verificada = true;
+            try {
+              await fsp.utimes(finalPath, folder.mtimeMs / 1000, folder.mtimeMs / 1000);
+            } catch {
+              /* la fecha de la carpeta no es crítica */
+            }
+          } else {
+            ctx.keepWork = true; // la copia está verificada: se conserva con su nombre provisional
+            result.resultado = 'con-errores';
+            result.motivoCodigo = 'nombre-ocupado';
+            result.verificada = false;
+            result.motivo = `La copia quedó completa y verificada, pero «${names.finalName}» apareció en el destino mientras tanto y no se sobrescribe. Se dejó como «${names.workName}»: cámbiale el nombre o bórrala tú. El original no se tocó. (${outcome.reason})`;
+          }
         }
       } catch (err) {
         if (err instanceof AbortedError) {
           cancelled = true;
           result.resultado = 'cancelada';
-          result.motivo = 'Cancelada por el usuario';
+          result.motivo = 'Cancelada por el usuario.';
         } else {
           const c = err && err.fatalInfo ? err.fatalInfo : classify(err, err && err.side);
+          result.resultado = 'con-errores';
           if (c.fatal) {
             fatal = { message: c.message, code: c.code };
-            result.resultado = 'con-errores';
             result.motivo = `Se detuvo toda la operación: ${c.message}`;
-            errores.push({ ruta: '', codigo: c.code, mensaje: c.message });
-          } else {
-            result.resultado = 'con-errores';
-            result.motivo = c.message;
-            errores.push({ ruta: '', codigo: c.code, mensaje: c.message });
-          }
+          } else result.motivo = c.message;
+          errores.push({ ruta: '', codigo: c.code, mensaje: c.message });
+        }
+      }
+
+      // ---- si algo salió mal, esta operación quita lo que creó (la carpeta provisional y su contenido)
+      if (ctx.workCreated && !ctx.renamed && !ctx.keepWork) {
+        let lim;
+        try {
+          lim = await withTimeout(removeCreated(ctx.created, workPath, destRoot), fatal ? 8000 : 120000);
+        } catch (err) {
+          lim = { limpio: false, quitados: 0, omitidos: [{ ruta: workPath, motivo: (err && err.message) || 'error' }] };
+        }
+        result.limpieza = { limpia: lim.limpio, pendientes: lim.limpio ? [] : [workPath] };
+        if (lim.limpio) {
+          await journalRemove(workPath);
+          result.motivo = `${result.motivo || ''} Se quitó la copia incompleta. Los originales no se tocaron.`.trim();
+        } else if (fatal) {
+          result.motivo = `El disco se desconectó o dejó de responder. Los originales no se tocaron. Vuelve a conectarlo y revisa si quedó una carpeta «${names.workName}» para borrarla.`;
+        } else {
+          result.motivo = `${result.motivo || ''} No se pudo quitar del todo la copia incompleta: quedó la carpeta «${names.workName}» en el destino. Bórrala tú.`.trim();
+        }
+      } else if (ctx.renamed) {
+        await journalRemove(workPath);
+      } else if (ctx.keepWork) {
+        result.limpieza = { limpia: false, pendientes: [workPath] }; // verificada pero con su nombre provisional: se explica en el motivo
+      }
+
+      // ---- registro para verificar más tarde (en el PC, no en el destino)
+      let originalInfo = { accion: 'sin-tocar', motivo: result.resultado === 'copiada-verificada' ? 'copiar no retira nada' : 'la copia no quedó verificada' };
+      if (ctx.renamed && result.verificada && registry && registry.save) {
+        try {
+          result.registroId = await registry.save({
+            version: 1,
+            nombre: names.finalName,
+            origen: folder.source,
+            destino: finalPath,
+            destinoRaiz: destRoot,
+            fecha: new Date(startedAt).toISOString(),
+            modo: plan.mode,
+            verificacion: plan.verify,
+            sistemaDeArchivos: fsName,
+            totalBytes: folder.bytes,
+            archivos,
+            carpetasVacias: dirEntries.map((d) => d.rel),
+            original: originalInfo,
+          });
+        } catch (err) {
+          result.avisoRegistro = `No se pudo guardar el registro para verificar más tarde (${(err && err.message) || err}). La copia está bien igualmente.`;
         }
       }
 
       // ---- retirar el original (solo modo "mover", solo tras verificar TODO)
-      man.original = { accion: 'sin-tocar', motivo: result.resultado === 'copiada-verificada' ? 'copiar no retira nada' : 'la copia no quedó verificada' };
       if (plan.mode === 'move' && result.resultado === 'copiada-verificada' && result.verificada) {
         emit({ fase: 'retirando original', carpeta: folder.source, carpetaIndice: folder.index, archivo: folder.source, bytesDone: ctx.bytes, bytesTotal: ctx.totalBytes, filesDone: ctx.files, filesTotal: ctx.totalFiles }, true);
         const keep = (motivo, codigo = null) => {
           result.resultado = 'original-sin-tocar';
           result.motivo = motivo;
           result.motivoCodigo = codigo;
-          man.original = { accion: 'sin-tocar', motivo };
+          originalInfo = { accion: 'sin-tocar', motivo };
         };
         if (plan.disposal === 'ninguna') {
           keep('Pedido: dejar el original donde está');
@@ -1097,8 +1138,8 @@ function createTransferEngine(deps = {}) {
           keep('Cancelada antes de retirar el original');
         } else if (plan.disposal === 'borrar') {
           if (hooks.afterVerify) await hooks.afterVerify({ folder }); // solo pruebas
-          const out = await permanentlyDelete({ folder, destBase, batchFolder, verified: result.verificada, verify: plan.verify, confirm: plan.confirmPermanentDelete, fsName });
-          applyDeleteOutcome(result, man, out);
+          const out = await permanentlyDelete({ folder, destBase: finalPath, destRoot, verified: result.verificada, verify: plan.verify, confirm: plan.confirmPermanentDelete, fsName });
+          originalInfo = applyDeleteOutcome(result, out);
         } else if (plan.disposal !== 'papelera') {
           keep(`Disposición desconocida: ${String(plan.disposal)}`);
         } else if (isProtected(folder.source)) {
@@ -1120,7 +1161,7 @@ function createTransferEngine(deps = {}) {
               if (stillThere) keep('La Papelera no retiró la carpeta: el original sigue donde estaba', noCabe ? 'papelera-no-cabe' : 'papelera-fallo');
               else {
                 result.resultado = 'original-enviado-a-papelera';
-                man.original = { accion: 'papelera', motivo: null };
+                originalInfo = { accion: 'papelera', motivo: null };
               }
             } catch (err) {
               const msg = (err && err.message) || String(err);
@@ -1130,41 +1171,42 @@ function createTransferEngine(deps = {}) {
           }
         }
       }
-      man.resultado = result.resultado;
+      if (result.registroId && registry && registry.update) await registry.update(result.registroId, { original: originalInfo }).catch(() => {});
       results.push(result);
-      try {
-        await saveProgress();
-      } catch (err) {
-        fatal = fatal || { message: err.message, code: err.code };
-      }
     }
 
     // ---- cierre
     const anyError = results.some((r) => r.resultado === 'con-errores' || r.resultado === 'borrado-parcial');
-    estado.estado = cancelled ? 'cancelado' : fatal || anyError ? 'con-errores' : 'completo';
-    estado.fin = new Date(now()).toISOString();
-    if (fatal) estado.abortada = fatal;
-    try {
-      await saveProgress();
-    } catch {
-      /* el resultado en memoria sigue siendo válido */
-    }
+    const estado = cancelled ? 'cancelado' : fatal || anyError ? 'con-errores' : 'completo';
     emit({ fase: 'terminado', bytesDone: overallBytes, bytesTotal: totalBytes, filesDone: overallFiles, filesTotal: totalFiles }, true);
 
     const outcome = {
-      estado: estado.estado,
+      estado,
       abortada: fatal,
       verificacion: plan.verify,
       avisoVerificacion: plan.verify === 'quick' ? 'Verificación RÁPIDA: solo comprueba tamaño y fecha, NO el contenido.' : null,
-      batchFolder,
-      lote: unique,
-      carpetas: results.map(({ manifest: _m, ...rest }) => rest),
-      created,
+      destinoRaiz: destRoot,
+      carpetas: results,
       totales: { archivos: overallFiles, bytes: totalBytes },
     };
-    // Lo que `eliminarDefinitivamente` necesita (plan por carpeta, manifiesto): no se enumera ni sale del motor.
-    Object.defineProperty(outcome, '_interno', { value: { plan, results, manifest, estado, fsName }, enumerable: false });
+    // Lo que `eliminarDefinitivamente` y `quitarCopiado` necesitan: no se enumera ni sale del motor.
+    Object.defineProperty(outcome, '_interno', { value: { plan, ctxs, fsName }, enumerable: false });
     return outcome;
+  }
+
+  /**
+   * Pasa la carpeta provisional a su nombre final SIN sobrescribir: si el nombre final ya existe (aunque sea una carpeta
+   * vacía, que en algunos sistemas el rename reemplazaría), no se hace nada y se informa.
+   */
+  async function renameToFinal(workPath, finalPath) {
+    const exists = await fsp.lstat(finalPath).then(() => true, () => false);
+    if (exists) return { ok: false, reason: 'ya existe algo con ese nombre' };
+    try {
+      await fsp.rename(workPath, finalPath);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, reason: `no se pudo cambiar el nombre: ${(err && err.code) || (err && err.message) || err}` };
+    }
   }
 
   // ------------------------------------------------------------ eliminarDefinitivamente
@@ -1193,143 +1235,184 @@ function createTransferEngine(deps = {}) {
     const done = [];
     for (const i of indices) {
       const c = resultado.carpetas[i];
-      const raw = inn.results[i];
       const out = await permanentlyDelete({
         folder: inn.plan.sources[i],
-        destBase: raw.destino,
-        batchFolder: resultado.batchFolder,
+        destBase: c.destino,
+        destRoot: inn.plan.destinationRoot,
         verified: c.verificada,
         verify: resultado.verificacion,
         confirm: true,
         fsName: inn.fsName,
       });
-      applyDeleteOutcome(raw, raw.manifest, out);
-      raw.manifest.resultado = raw.resultado;
-      Object.assign(c, { resultado: raw.resultado, motivo: raw.motivo, motivoCodigo: raw.motivoCodigo, borradoParcial: raw.borradoParcial });
+      const originalInfo = applyDeleteOutcome(c, out);
+      if (c.registroId && registry && registry.update) await registry.update(c.registroId, { original: originalInfo }).catch(() => {});
       done.push({ indice: i, resultado: c.resultado, motivo: c.motivo, borradoParcial: c.borradoParcial });
     }
-    if (inn.results.some((r) => r.resultado === 'borrado-parcial') && inn.estado.estado === 'completo') {
-      inn.estado.estado = 'con-errores';
-      resultado.estado = 'con-errores';
-    }
-    let manifiestoActualizado = true;
-    try {
-      inn.estado.carpetas = inn.results.map((r) => ({ origen: r.origen, resultado: r.resultado }));
-      inn.manifest.carpetas = inn.results.map((r) => r.manifest);
-      await fsp.writeFile(nodePath.join(resultado.batchFolder, 'ESTADO.json'), JSON.stringify(inn.estado, null, 2), { flag: 'w' }); // archivos propios del lote
-      await fsp.writeFile(nodePath.join(resultado.batchFolder, 'MANIFIESTO.json'), JSON.stringify(inn.manifest, null, 2), { flag: 'w' });
-    } catch {
-      manifiestoActualizado = false;
-    }
-    return { carpetas: done, manifiestoActualizado, estado: resultado.estado };
+    if (resultado.carpetas.some((r) => r.resultado === 'borrado-parcial') && resultado.estado === 'completo') resultado.estado = 'con-errores';
+    return { carpetas: done, estado: resultado.estado };
   }
 
   // -------------------------------------------------------------- quitarCopiado
 
   /**
-   * Quita SOLO lo que esta operación creó (lista registrada) y solo dentro de su carpeta de lote.
-   * Se niega si algún original ya se retiró: en ese caso la copia es lo único que queda.
+   * Deshace una COPIA completa (para «Quitar la copia»): quita solo lo que esta operación creó (lista registrada), sin
+   * seguir enlaces y sin salir de la carpeta copiada. Se niega si ya se retiró algún original (la copia es lo único que
+   * queda) y solo toca carpetas copiadas y verificadas cuyo original sigue ahí.
    */
   async function quitarCopiado(resultado) {
-    if (!resultado || typeof resultado.batchFolder !== 'string' || !Array.isArray(resultado.created)) throw new Error('Resultado no válido');
-    const disposed = (resultado.carpetas || []).filter((c) => ['original-enviado-a-papelera', 'original-borrado-definitivamente', 'borrado-parcial'].includes(c.resultado));
-    if (disposed.length) throw new Error('No se puede quitar la copia: ya se retiró algún original y la copia es lo único que queda');
-    const batch = resultado.batchFolder;
-    const report = { quitados: 0, omitidos: [] };
-    const entries = resultado.created.filter((c) => c && typeof c.path === 'string' && !c.shared && c.path !== batch);
-    // Archivos primero; carpetas de la más profunda a la más superficial.
-    const files = entries.filter((c) => c.type === 'file');
-    const dirs = entries.filter((c) => c.type === 'dir').sort((a, b) => b.path.length - a.path.length);
-    for (const e of [...files, ...dirs, { path: batch, type: 'dir' }]) {
-      const r = await removeCreatedEntry(e, batch === e.path ? nodePath.dirname(batch) : batch);
-      if (r === 'quitado') report.quitados++;
-      else report.omitidos.push({ ruta: e.path, motivo: r });
+    const inn = resultado && resultado._interno;
+    if (!inn || !Array.isArray(resultado.carpetas)) throw new Error('Resultado no válido');
+    if (resultado.carpetas.some((c) => ['original-enviado-a-papelera', 'original-borrado-definitivamente', 'borrado-parcial'].includes(c.resultado))) {
+      throw new Error('No se puede quitar la copia: ya se retiró algún original y la copia es lo único que queda');
+    }
+    const report = { quitados: 0, omitidos: [], carpetas: [] };
+    resultado.carpetas.forEach((c, i) => {
+      const ctx = inn.ctxs[i];
+      if (ctx && ctx.renamed && c.verificada === true && ['copiada-verificada', 'original-sin-tocar'].includes(c.resultado)) report.carpetas.push(i);
+    });
+    if (report.carpetas.length === 0) throw new Error('No hay ninguna copia que se pueda quitar');
+    for (const i of report.carpetas) {
+      const c = resultado.carpetas[i];
+      const ctx = inn.ctxs[i];
+      const r = await removeCreated(ctx.created, ctx.finalPath, inn.plan.destinationRoot);
+      report.quitados += r.quitados;
+      report.omitidos.push(...r.omitidos);
+      if (r.limpio) {
+        c.resultado = 'copia-quitada';
+        c.verificada = false;
+        c.motivo = 'La copia se quitó. El original no se tocó.';
+        if (c.registroId && registry && registry.remove) await registry.remove(c.registroId).catch(() => {});
+      }
     }
     return report;
   }
 
-  // ----------------------------------------------------------------- verifyBatch
+  // ------------------------------------------------- carpetas provisionales de una sesión anterior
 
-  /** Vuelve a comprobar un lote ya copiado, leyendo MANIFIESTO.json. */
-  async function verifyBatch(batchFolder, { mode = 'full', onProgress, signal } = {}) {
-    if (typeof batchFolder !== 'string' || !R.normalizePath(batchFolder)) throw new Error('Carpeta de lote no válida');
-    let manifest;
+  /**
+   * Borra UNA carpeta provisional «….copiando» que el diario sabe que creó esta app (por ejemplo tras un cierre forzado).
+   * Se niega si el nombre no es de una carpeta provisional, si no es una carpeta de verdad (un enlace no), si no está
+   * donde el diario la anotó o si el diario no la conoce.
+   */
+  async function removePendingWork(ruta, entry) {
+    if (typeof ruta !== 'string' || !entry || entry.ruta !== ruta || !WORK_RE.test(nodePath.basename(ruta))) throw new Error('Esa carpeta no es una copia incompleta de BoneYardDog');
+    let st;
     try {
-      manifest = JSON.parse(await fsp.readFile(nodePath.join(batchFolder, 'MANIFIESTO.json'), 'utf8'));
-    } catch (err) {
-      throw new Error(`No se pudo leer MANIFIESTO.json (${err.code || err.message})`);
+      st = await fsp.lstat(ruta);
+    } catch {
+      return { estado: 'ya-no-esta' };
     }
-    if (!manifest || manifest.version !== 1 || !Array.isArray(manifest.carpetas)) throw new Error('MANIFIESTO.json no tiene el formato esperado');
-    const fsName = manifest.sistemaDeArchivos || 'desconocido';
-    const problems = [];
-    let checked = 0;
-    let bytesChecked = 0;
-    const totalFiles = manifest.carpetas.reduce((s, c) => s + (c.archivos ? c.archivos.length : 0), 0);
-    const safeRel = (rel) => typeof rel === 'string' && rel !== '' && !rel.split('/').some((p) => p === '..' || p === '' || p === '.') && !/^[A-Za-z]:|^[\\/]/.test(rel) && !rel.includes('\\') && !rel.includes('\0');
-    for (const carpeta of manifest.carpetas) {
-      if (!carpeta.archivos || carpeta.resultado === 'cancelada') continue;
-      const parts = typeof carpeta.destino === 'string' ? carpeta.destino.split('/') : [];
-      if (parts.length === 0 || parts.some((p) => p === '..' || p === '' || p === '.' || /^[A-Za-z]:$/.test(p) || p.includes('\\') || p.includes('\0'))) {
-        problems.push({ ruta: String(carpeta.destino), problema: 'ruta-no-valida' });
-        continue;
-      }
-      const base = nodePath.join(batchFolder, ...parts);
-      const expected = new Set();
-      for (const a of carpeta.archivos) {
-        if (signal && signal.aborted) throw new AbortedError();
-        if (!safeRel(a.ruta)) {
-          problems.push({ ruta: String(a.ruta), problema: 'ruta-no-valida' });
-          continue;
-        }
-        expected.add(a.ruta);
-        const p = relToPath(base, a.ruta);
-        checked++;
-        try {
-          const st = await fsp.lstat(p);
-          if (!st.isFile()) problems.push({ ruta: `${carpeta.destino}/${a.ruta}`, problema: 'no-es-archivo' });
-          else if (st.size !== a.tamano) problems.push({ ruta: `${carpeta.destino}/${a.ruta}`, problema: 'tamano', esperado: a.tamano, encontrado: st.size });
-          else if (mode === 'full' && a.sha256) {
-            const h = await fsp.open(p, 'r');
-            try {
-              const hash = crypto.createHash('sha256');
-              const buf = Buffer.allocUnsafe(CHUNK);
-              let pos = 0;
-              for (;;) {
-                if (signal && signal.aborted) throw new AbortedError();
-                const { bytesRead } = await h.read(buf, 0, buf.length, pos);
-                if (bytesRead === 0) break;
-                hash.update(buf.subarray(0, bytesRead));
-                pos += bytesRead;
-              }
-              bytesChecked += pos;
-              if (hash.digest('hex') !== a.sha256) problems.push({ ruta: `${carpeta.destino}/${a.ruta}`, problema: 'huella' });
-            } finally {
-              await h.close().catch(() => {});
-            }
-          } else if (!R.mtimeClose(st.mtimeMs, a.mtimeMs, fsName)) {
-            problems.push({ ruta: `${carpeta.destino}/${a.ruta}`, problema: 'fecha' });
-          } else if (mode === 'full' && !a.sha256) {
-            problems.push({ ruta: `${carpeta.destino}/${a.ruta}`, problema: 'sin-huella-en-el-manifiesto', aviso: true });
-          }
-        } catch (err) {
-          if (err instanceof AbortedError) throw err;
-          problems.push({ ruta: `${carpeta.destino}/${a.ruta}`, problema: err.code === 'ENOENT' ? 'falta' : `error-${err.code || 'desconocido'}` });
-        }
-        if (onProgress) onProgress({ fase: 'verificando', filesDone: checked, filesTotal: totalFiles, bytesDone: bytesChecked, archivo: p });
-      }
-      // Sobrantes dentro de la carpeta.
-      try {
-        const live = await walk(base, { checkProtected: false });
-        for (const e of live.entries) if (e.type === 'file' && !expected.has(e.rel)) problems.push({ ruta: `${carpeta.destino}/${e.rel}`, problema: 'sobrante' });
-      } catch {
-        /* si no se puede leer la carpeta, ya se informó cada archivo como faltante */
-      }
-    }
-    const real = problems.filter((p) => !p.aviso);
-    return { ok: real.length === 0, verificados: checked, problemas: problems, modo: mode };
+    if (st.isSymbolicLink() || !st.isDirectory()) throw new Error('Esa ruta no es una carpeta normal: no se toca');
+    const realParent = await fsp.realpath(nodePath.dirname(ruta));
+    const realRoot = await fsp.realpath(entry.raiz);
+    if (!R.isInside(realParent, realRoot) || !R.isInside(realRoot, realParent)) throw new Error('La carpeta no está donde la anotó BoneYardDog: no se toca');
+    if (isProtectedDest(ruta)) throw new Error('La carpeta está en una zona protegida: no se toca');
+    await fsp.rm(ruta, { recursive: true, force: false });
+    return { estado: 'quitada' };
   }
 
-  return { preflight, run, quitarCopiado, eliminarDefinitivamente, verifyBatch, walk };
+  // ----------------------------------------------------------------------- verifyRecord
+
+  /**
+   * Vuelve a comprobar una copia ya hecha con los datos de su REGISTRO (guardado en el PC): cada archivo debe estar, con su
+   * tamaño y —en modo completo— su huella SHA-256; no debe sobrar nada. NUNCA dice «bien» si no se comprobó ningún
+   * archivo. Estados: 'ok' | 'problemas' | 'sin-archivos' | 'no-disponible' | 'distinta'.
+   */
+  async function verifyRecord(record, { mode = 'full', onProgress, signal } = {}) {
+    if (!record || typeof record.destino !== 'string' || !R.normalizePath(record.destino) || !Array.isArray(record.archivos)) throw new Error('El registro de esa copia no es válido');
+    const fsName = record.sistemaDeArchivos || 'desconocido';
+    const root = record.destino;
+    const drive = /^[A-Za-z]:/.test(root) ? `${root[0].toUpperCase()}:` : null;
+    let st;
+    try {
+      st = await fsp.lstat(root);
+    } catch (err) {
+      const gone = err && (err.code === 'ENOENT' || err.code === 'ENOTDIR' || err.code === 'EIO' || err.code === 'ENODEV' || err.code === 'ENXIO');
+      return { estado: 'no-disponible', modo: mode, verificados: 0, problemas: [], motivo: gone ? `No encuentro esa carpeta: conecta el disco${drive ? ` ${drive}` : ''} y vuelve a probar.` : `No se pudo leer esa carpeta (${(err && err.code) || (err && err.message)}).` };
+    }
+    if (st.isSymbolicLink() || !st.isDirectory()) return { estado: 'distinta', modo: mode, verificados: 0, problemas: [], motivo: `«${root}» ya no es la carpeta que se copió (es un archivo o un enlace).` };
+    const safeRel = (rel) => typeof rel === 'string' && rel !== '' && !rel.split('/').some((p) => p === '..' || p === '' || p === '.') && !/^[A-Za-z]:|^[\\/]/.test(rel) && !rel.includes('\\') && !rel.includes('\0');
+    const problems = [];
+    const expected = new Set();
+    let checked = 0;
+    let bytesChecked = 0;
+    const totalFiles = record.archivos.length;
+    for (const a of record.archivos) {
+      if (signal && signal.aborted) throw new AbortedError();
+      if (!safeRel(a.ruta)) {
+        problems.push({ ruta: String(a.ruta), problema: 'ruta-no-valida' });
+        continue;
+      }
+      expected.add(a.ruta);
+      const p = relToPath(root, a.ruta);
+      checked++;
+      try {
+        const fst = await fsp.lstat(p);
+        if (!fst.isFile()) problems.push({ ruta: a.ruta, problema: 'no-es-archivo' });
+        else if (fst.size !== a.tamano) problems.push({ ruta: a.ruta, problema: 'tamano', esperado: a.tamano, encontrado: fst.size });
+        else if (mode === 'full' && a.sha256) {
+          const h = await fsp.open(p, 'r');
+          try {
+            const hash = crypto.createHash('sha256');
+            const buf = Buffer.allocUnsafe(CHUNK);
+            let pos = 0;
+            for (;;) {
+              if (signal && signal.aborted) throw new AbortedError();
+              const { bytesRead } = await h.read(buf, 0, buf.length, pos);
+              if (bytesRead === 0) break;
+              hash.update(buf.subarray(0, bytesRead));
+              pos += bytesRead;
+              bytesChecked += bytesRead;
+              if (onProgress) onProgress({ fase: 'verificando', filesDone: checked - 1, filesTotal: totalFiles, bytesDone: bytesChecked, archivo: p });
+            }
+            if (hash.digest('hex') !== a.sha256) problems.push({ ruta: a.ruta, problema: 'huella' });
+          } finally {
+            await h.close().catch(() => {});
+          }
+        } else if (!R.mtimeClose(fst.mtimeMs, a.mtimeMs, fsName)) {
+          problems.push({ ruta: a.ruta, problema: 'fecha' });
+        } else if (mode === 'full' && !a.sha256) {
+          problems.push({ ruta: a.ruta, problema: 'sin-huella-en-el-registro', aviso: true });
+        }
+      } catch (err) {
+        if (err instanceof AbortedError) throw err;
+        problems.push({ ruta: a.ruta, problema: err.code === 'ENOENT' ? 'falta' : `error-${err.code || 'desconocido'}` });
+      }
+      if (onProgress) onProgress({ fase: 'verificando', filesDone: checked, filesTotal: totalFiles, bytesDone: bytesChecked, archivo: p });
+    }
+    // Carpetas vacías y sobrantes (archivos o carpetas que no estaban en el registro).
+    const emptyDirs = new Set((record.carpetasVacias || []).filter(safeRel));
+    for (const d of emptyDirs) {
+      const dst = await fsp.lstat(relToPath(root, d)).catch(() => null);
+      if (!dst || !dst.isDirectory()) problems.push({ ruta: d, problema: 'falta' });
+    }
+    try {
+      const live = await walk(root, { checkProtected: false });
+      const dirsKnown = new Set();
+      for (const rel of [...expected, ...emptyDirs]) {
+        const parts = rel.split('/');
+        for (let i = 1; i <= parts.length; i++) dirsKnown.add(parts.slice(0, i).join('/'));
+      }
+      for (const e of live.entries) {
+        if (e.type === 'file' && !expected.has(e.rel)) problems.push({ ruta: e.rel, problema: 'sobrante' });
+        else if (e.type === 'dir' && !dirsKnown.has(e.rel)) problems.push({ ruta: e.rel, problema: 'sobrante' });
+      }
+      if (live.unreadable.length) problems.push({ ruta: live.unreadable[0].ruta, problema: 'ilegible' });
+    } catch {
+      /* si no se puede leer la carpeta, ya se informó cada archivo como faltante */
+    }
+    const real = problems.filter((x) => !x.aviso);
+    const estado = real.length > 0 ? 'problemas' : checked === 0 ? 'sin-archivos' : 'ok';
+    return {
+      estado,
+      modo: mode,
+      verificados: checked,
+      problemas: problems,
+      motivo: estado === 'sin-archivos' ? 'No había archivos que comprobar en esa copia (el registro no trae ninguno).' : null,
+    };
+  }
+
+  return { preflight, run, quitarCopiado, eliminarDefinitivamente, removePendingWork, verifyRecord, walk };
 }
 
-module.exports = { createTransferEngine, batchName, splitAbsolute, FatalTransferError, AbortedError, BATCH_DIR, MAX_SOURCES, SIDE_FILES };
+module.exports = { createTransferEngine, pickNames, WORK_RE, splitAbsolute, FatalTransferError, AbortedError, MAX_SOURCES };

@@ -53,7 +53,6 @@ const context = {
   revealHook: null,
   // Copiar y transferir.
   destination: null, // { path, letter, driveType, fileSystem, sizeBytes, freeBytes }: lo fija la función setDestination
-  batchFolder: null, // carpeta de lote elegida para «verificar una copia anterior»: la fija la función setBatchFolder
   revealable: new Set(), // rutas que el motor confirmó (carpeta del lote y copias): se pueden mostrar en el Explorador
   transferBusy: false,
   closeConfirmed: false,
@@ -88,26 +87,10 @@ async function setDestination(p) {
   return { ...context.destination };
 }
 
-/** Único lugar donde se fija la carpeta de lote a verificar: viene del diálogo y debe contener MANIFIESTO.json. */
-async function setBatchFolder(p) {
-  const folder = V.validateAbsolutePath(p);
-  let st;
-  try {
-    st = await fs.promises.lstat(path.join(folder, 'MANIFIESTO.json'));
-  } catch {
-    throw new V.ValidationError('Esa carpeta no contiene MANIFIESTO.json: elige la carpeta del lote (la que tiene la fecha, dentro de «BoneYardDog»).');
-  }
-  if (!st.isFile()) throw new V.ValidationError('MANIFIESTO.json no es un archivo');
-  context.batchFolder = folder;
-  context.revealable.add(folder);
-  return { path: folder };
-}
-
 /** Recuerda las rutas que el motor confirmó (para «Abrir la copia en el Explorador»). */
 function rememberRevealable(result) {
   if (!result) return;
-  if (typeof result.batchFolder === 'string') context.revealable.add(result.batchFolder);
-  for (const c of result.carpetas || []) if (typeof c.destino === 'string') context.revealable.add(c.destino);
+  for (const c of result.carpetas || []) if (typeof c.destino === 'string' && c.verificada) context.revealable.add(c.destino);
 }
 
 function usageFrom(s) {
@@ -375,8 +358,6 @@ function registerIpc() {
       rememberRevealable(result);
       // Si TODO lo copiado eran datos de prueba, se recuerda para poder quitar esa copia al borrarlos (si el usuario lo pide).
       if (result.carpetas.length > 0 && result.carpetas.every((c) => TR.isInside(c.origen, testData.rootPath()))) context.testRunIds.add(result.runId);
-      // «Verificar de nuevo la copia» usa esta carpeta de lote (confirmada por el motor, con su MANIFIESTO.json).
-      if (result.batchFolder) await setBatchFolder(result.batchFolder).catch(() => {});
       return result;
     } finally {
       context.transferBusy = false;
@@ -407,32 +388,40 @@ function registerIpc() {
     return transferService.quitarCopiado(runId);
   });
 
-  handle(V.CHANNELS.verifyBatchChooseFolder, async (...args) => {
+  // --------------------------------------------------------------- copias anteriores (registro en el PC)
+
+  handle(V.CHANNELS.copiesList, async (...args) => {
     V.validateNoArgs(args);
-    let chosen;
-    if (context.smokeBatchFolder) {
-      chosen = context.smokeBatchFolder; // solo existe en la prueba automática
-    } else {
-      const result = await dialog.showOpenDialog(mainWindow, {
-        title: 'Elegir la carpeta de la copia a verificar (la que tiene MANIFIESTO.json)',
-        properties: ['openDirectory'],
-      });
-      if (result.canceled || result.filePaths.length === 0) return null;
-      chosen = result.filePaths[0];
-    }
-    return setBatchFolder(chosen);
+    return transferService.listRecords();
   });
 
-  handle(V.CHANNELS.verifyBatchRun, async (options, ...rest) => {
+  handle(V.CHANNELS.copiesVerify, async (id, options, ...rest) => {
     V.validateNoArgs(rest);
-    const valid = V.validateVerifyBatchOptions(options);
-    if (!context.batchFolder) throw new V.ValidationError('Primero hay que elegir la carpeta de la copia');
+    V.validateOpaqueId(id);
+    const valid = V.validateVerifyOptions(options);
     context.transferBusy = true;
     try {
-      return await transferService.verifyBatch(context.batchFolder, { mode: valid.mode });
+      return await transferService.verifyRecord(id, { mode: valid.mode });
     } finally {
       context.transferBusy = false;
     }
+  });
+
+  handle(V.CHANNELS.copiesRemove, async (id, ...rest) => {
+    V.validateNoArgs(rest);
+    V.validateOpaqueId(id);
+    return transferService.removeRecord(id); // solo quita el registro del PC, nunca la copia
+  });
+
+  handle(V.CHANNELS.pendingList, async (...args) => {
+    V.validateNoArgs(args);
+    return transferService.listPending();
+  });
+
+  handle(V.CHANNELS.pendingClean, async (ruta, ...rest) => {
+    V.validateNoArgs(rest);
+    V.validateAbsolutePath(ruta);
+    return transferService.cleanPending(ruta); // el hilo comprueba que el diario de BoneYardDog la anotó
   });
 
   // ------------------------------------------------------------------- datos de prueba
@@ -518,12 +507,13 @@ async function start() {
   });
   testData = createTestDataService({ documentsDir: () => context.smokeDocuments || app.getPath('documents'), version: app.getVersion() });
   // La Papelera real solo existe aquí (shell.trashItem); el hilo de transferencias se la pide a este proceso.
+  const registryDir = path.join(app.getPath('userData'), 'registros');
   const trash = (p) => (context.smokeTrashFails ? Promise.reject(new Error('Simulado por la prueba: Windows rechazó enviar a la Papelera (E_ABORT)')) : shell.trashItem(p));
   transferService = new TransferService(
     SMOKE
       ? // Solo en la prueba automática: carpetas «Removible …» se tratan como discos sin Papelera.
-        { trash, workerFactory: () => new Worker(path.join(__dirname, '..', 'service', 'transfer-worker.js'), { workerData: { hasTrash: true, progressIntervalMs: 100, smokeRemovablePrefix: 'Removible ' } }) }
-      : { trash },
+        { trash, workerFactory: () => new Worker(path.join(__dirname, '..', 'service', 'transfer-worker.js'), { workerData: { hasTrash: true, progressIntervalMs: 100, smokeRemovablePrefix: 'Removible ', registryDir } }) }
+      : { trash, registryDir },
   );
   transferService.on('progress', (progress) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(V.CHANNELS.transferProgress, progress);
