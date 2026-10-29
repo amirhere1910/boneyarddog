@@ -199,3 +199,12 @@ test('los canales nuevos existen y tienen el prefijo y formato esperados', () =>
   }
   assert.equal(new Set(Object.values(V.CHANNELS)).size, Object.keys(V.CHANNELS).length, 'sin canales repetidos');
 });
+
+test('borrar datos de prueba: solo { confirm: true, removeCopies? } y NINGUNA ruta', () => {
+  assert.deepEqual(V.validateTestDataDelete({ confirm: true }), { confirm: true, removeCopies: false });
+  assert.deepEqual(V.validateTestDataDelete({ confirm: true, removeCopies: true }), { confirm: true, removeCopies: true });
+  for (const mal of [undefined, null, [], 'x', {}, { confirm: false }, { confirm: 'true' }, { confirm: 1 }, { removeCopies: true }, { confirm: true, removeCopies: 'sí' }, { confirm: true, path: 'C:\\Users' }, { confirm: true, root: '/' }, { confirm: true, removeCopies: 1 }]) {
+    assert.throws(() => V.validateTestDataDelete(mal), V.ValidationError, JSON.stringify(mal));
+  }
+  for (const name of ['testDataStatus', 'testDataCreate', 'testDataCancel', 'testDataDelete', 'testDataUse', 'testDataProgress', 'appInfo']) assert.match(V.CHANNELS[name], /^byd:[a-z-]+$/, name);
+});

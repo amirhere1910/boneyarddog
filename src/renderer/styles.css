@@ -364,3 +364,10 @@ button.peligro { background: var(--peligro-borde); border-color: var(--peligro-b
   cursor: default;
 }
 .carpeta[data-transferida="1"] { opacity: 0.6; }
+
+/* --- Fase 4: ayuda y pruebas, versión --------------------------------------------------- */
+.ayuda > summary { cursor: pointer; font-weight: 600; color: var(--acento); }
+.ayuda > summary:focus-visible { outline: 3px solid var(--acento); outline-offset: 2px; }
+.ayuda-cuerpo h2 { margin-top: 8px; }
+.pie-app { margin-top: 16px; padding-top: 8px; border-top: 1px solid var(--borde); color: var(--suave); font-size: 0.85rem; overflow-wrap: anywhere; }
+body[data-estado="resultado"][data-pestana="mapa"] .pie-app { display: none; }

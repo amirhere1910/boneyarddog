@@ -52,7 +52,7 @@ test('los canales del preload coinciden con la lista oficial de validate.js', ()
 test('cada manejador IPC pasa por handle(): comprueba remitente y valida', () => {
   assert.equal((main.match(/ipcMain\.handle\(/g) || []).length, 1, 'ipcMain.handle solo dentro de handle()');
   assert.match(main, /if \(!trusted\(event\)\)/);
-  for (const channel of Object.keys(V.CHANNELS).filter((c) => c !== 'progress' && c !== 'transferProgress')) {
+  for (const channel of Object.keys(V.CHANNELS).filter((c) => c !== 'progress' && c !== 'transferProgress' && c !== 'testDataProgress')) {
     assert.match(main, new RegExp(`handle\\(V\\.CHANNELS\\.${channel}`), channel);
   }
   assert.match(main, /validateNoArgs/);
@@ -69,7 +69,7 @@ test('la ruta a escanear solo viene del diálogo o de una unidad que el principa
   assert.match(main, /setChosenFolder\(chosen\)/);
   assert.match(main, /setChosenFolder\(drive\.path\)/);
   assert.match(main, /\(await listDrives\(\)\)\.find\(\(d\) => d\.letter === wanted\)/);
-  assert.equal((main.match(/setChosenFolder\(/g) || []).length, 3, 'definición + diálogo + unidad');
+  assert.equal((main.match(/setChosenFolder\(/g) || []).length, 4, 'definición + diálogo + unidad + datos de prueba (ruta fija)');
 });
 
 test('"Mostrar en el Explorador" y "Ignorar" solo aceptan rutas que el servicio confirma', () => {
@@ -133,6 +133,7 @@ const EXPECTED_API = [
   'revealInExplorer', 'getTreemap', 'getDetails', 'summarizeSelection', 'onProgress',
   'chooseDestination', 'chooseDestinationDrive', 'listDestinationDrives', 'transferPreflight', 'transferRun', 'transferCancel',
   'transferDeleteFromResult', 'transferRemoveCopy', 'verifyBatchChooseFolder', 'verifyBatchRun', 'onTransferProgress',
+  'testDataStatus', 'testDataCreate', 'testDataCancel', 'testDataDelete', 'testDataUse', 'getAppInfo', 'onTestDataProgress',
 ].sort();
 
 test('el preload expone SOLO las funciones previstas, y ninguna acepta una ruta de destino', () => {
@@ -142,7 +143,7 @@ test('el preload expone SOLO las funciones previstas, y ninguna acepta una ruta 
   // Las funciones de copiar y transferir: sus parámetros son opciones, identificadores o una letra, nunca un destino.
   for (const m of body.matchAll(/^  (\w+): \(([^)]*)\) =>/gm)) {
     const [, name, params] = m;
-    if (!/^(choose(Destination|DestinationDrive)|listDestinationDrives|transfer\w+|verifyBatch\w+)$/.test(name)) continue;
+    if (!/^(choose(Destination|DestinationDrive)|listDestinationDrives|transfer\w+|verifyBatch\w+|testData\w+)$/.test(name)) continue;
     assert.doesNotMatch(params, /dest|destino|target|path|ruta|folder|carpeta|dir/i, `${name}(${params}) no puede recibir una ruta`);
   }
   assert.match(preload, /chooseDestination: \(\) =>/);
@@ -200,4 +201,15 @@ test('«Abrir en el Explorador» acepta rutas del motor además de las del anál
 test('cerrar la ventana con una copia en curso pide confirmación', () => {
   assert.match(main, /win\.on\('close', \(event\) => \{\s*if \(!context\.transferBusy \|\| context\.closeConfirmed\) return;\s*event\.preventDefault\(\);/);
   assert.match(main, /Cancelar la operación y cerrar/);
+});
+
+test('datos de prueba: la ruta es fija (Documentos + nombre fijo) y la fija el principal; ningún canal recibe una ruta', () => {
+  assert.match(main, /documentsDir: \(\) => context\.smokeDocuments \|\| app\.getPath\('documents'\)/);
+  assert.match(main, /handle\(V\.CHANNELS\.testDataCreate, async \(\.\.\.args\) => \{\s*V\.validateNoArgs\(args\)/);
+  assert.match(main, /handle\(V\.CHANNELS\.testDataUse, async \(\.\.\.args\) => \{\s*V\.validateNoArgs\(args\)/);
+  assert.match(main, /const valid = V\.validateTestDataDelete\(options\);/);
+  assert.match(main, /await testData\.removeRoot\(\)/);
+  assert.equal((main.match(/removeRoot\(/g) || []).length, 1, 'un solo borrado de los datos de prueba');
+  assert.match(main, /smokeDocuments: null/);
+  assert.doesNotMatch(appJs, /BoneYardDog-Prueba|getPath/, 'la interfaz no conoce ni manda la ruta');
 });

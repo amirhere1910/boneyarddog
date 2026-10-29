@@ -1182,6 +1182,17 @@
     if (state.details.open) closeDetails(true);
   });
 
+  // Lo que usa «Ayuda y pruebas» (datos-prueba-ui.js): escanear una carpeta ya confirmada por el principal y refrescar la configuración.
+  window.BYDApp = {
+    scan: (chosen) => scan(chosen),
+    setSettings: (next) => {
+      state.settings = next;
+      syncControls();
+    },
+    getSettings: () => state.settings,
+    showMessage,
+  };
+
   (async () => {
     setState('inicio');
     const res = await byd.getSettings();
