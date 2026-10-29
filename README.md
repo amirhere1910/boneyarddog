@@ -8,6 +8,15 @@ Gratis y de código abierto (licencia MIT). Hecho con Electron.
 
 Tiene dos vistas. El **mapa** dibuja las carpetas como cuadros: cuanto más grande el cuadro, más pesa la carpeta; en naranja y amarillo las que tuvieron movimiento reciente, en azul y plomo las que no. Con clic entras a una carpeta y con clic derecho ves sus opciones y detalles. La **lista de candidatas** muestra las **carpetas grandes que llevan tiempo sin usarse** (por defecto, más de 3 meses y más de 500 MB; ambos se pueden cambiar en la pantalla) para que puedas pasarlas a un disco externo o USB. Una carpeta está "sin uso" si **ningún archivo dentro** fue modificado ni creado o copiado en ese período. La fecha de "último acceso" se ignora porque antivirus y copias de seguridad la cambian solos. Cada carpeta muestra su archivo más reciente, y puedes ignorar las que no quieras ver.
 
+## Cómo obtener el programa (sin instalar nada más)
+
+No hace falta Node ni PowerShell. Descarga el **instalador** desde GitHub:
+
+1. Entra en la página del proyecto → **Releases** y baja `BoneYardDog-<versión>-instalador.exe`. Si todavía no hay una versión publicada: pestaña **Actions** → «Construir instalador» → última ejecución con ✔ → **Artifacts** → `BoneYardDog-<versión>` (un .zip con el instalador, la versión portátil y las huellas `SHA256SUMS.txt`). También puedes pulsar **Run workflow** para construir uno nuevo.
+2. Ábrelo. Windows dirá «Windows protegió su PC» porque el programa **no está firmado** (no hay certificado de firma de código): pulsa **Más información** → **Ejecutar de todas formas**.
+3. Se instala solo para tu usuario (no pide administrador). También hay una **versión portátil** (`.zip`): descomprímela y abre `BoneYardDog.exe`.
+4. Dentro del programa: **Ayuda y pruebas** → **Crear datos de prueba** para probarlo sin arriesgar nada tuyo. Guía de 5 minutos: [`docs/PRUEBAS-MANUALES.md`](docs/PRUEBAS-MANUALES.md).
+
 ## Copiar y transferir
 
 Desde el mapa o la lista, con clic derecho o con la barra de selección:
@@ -35,6 +44,9 @@ npm run smoke      # abre la app sola, escanea carpetas de ejemplo, usa los cont
                    # asistente-*.png) y resultado.json
 npm run smoke:transfer  # prueba el motor de transferencia en un sistema real (con la Papelera de verdad)
                         # y guarda smoke-artifacts/transferencia.json
+npm run smoke:discos    # (solo Windows, como administrador) crea discos virtuales NTFS, exFAT y FAT32 con diskpart
+                        # y prueba el motor contra ellos; guarda smoke-artifacts/discos.json
+npm run empaquetar      # construye el instalador en dist/ (en Windows; normalmente lo hace GitHub)
 ```
 
 `npm run smoke` se ejecuta automáticamente en Windows real en cada push (ver `.github/workflows/smoke-windows.yml`). En Linux sin pantalla usa `xvfb-run` si está instalado.

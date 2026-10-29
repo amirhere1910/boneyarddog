@@ -37,12 +37,26 @@ contextBridge.exposeInMainWorld('byd', {
   transferRemoveCopy: (runId) => ipcRenderer.invoke('byd:transfer-remove-copy', runId),
   verifyBatchChooseFolder: () => ipcRenderer.invoke('byd:verify-batch-choose-folder'),
   verifyBatchRun: (options) => ipcRenderer.invoke('byd:verify-batch-run', options),
+  // Datos de prueba: ninguna función recibe una ruta (la carpeta es fija y la conoce el proceso principal).
+  testDataStatus: () => ipcRenderer.invoke('byd:test-data-status'),
+  testDataCreate: () => ipcRenderer.invoke('byd:test-data-create'),
+  testDataCancel: () => ipcRenderer.invoke('byd:test-data-cancel'),
+  testDataDelete: (options) => ipcRenderer.invoke('byd:test-data-delete', options),
+  testDataUse: () => ipcRenderer.invoke('byd:test-data-use'),
+  getAppInfo: () => ipcRenderer.invoke('byd:app-info'),
   /** Suscribe a los avisos de progreso. Devuelve una función para darse de baja. */
   onProgress: (callback) => {
     if (typeof callback !== 'function') throw new TypeError('onProgress necesita una función');
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('byd:progress', listener);
     return () => ipcRenderer.removeListener('byd:progress', listener);
+  },
+  /** Avisos de progreso de la creación de datos de prueba. Devuelve una función para darse de baja. */
+  onTestDataProgress: (callback) => {
+    if (typeof callback !== 'function') throw new TypeError('onTestDataProgress necesita una función');
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('byd:test-data-progress', listener);
+    return () => ipcRenderer.removeListener('byd:test-data-progress', listener);
   },
   /** Avisos de progreso de una copia o de una verificación. Devuelve una función para darse de baja. */
   onTransferProgress: (callback) => {

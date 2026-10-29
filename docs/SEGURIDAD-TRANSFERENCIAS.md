@@ -114,6 +114,23 @@ Cada envío al repositorio ejecuta `npm run smoke:transfer` dentro de Electron, 
 
 **Sorpresas:** (1) una marca interna del destino anterior seguía en la pantalla al abrir otra operación (corregido); (2) en la ventana mínima el cuadro de una carpeta transferida puede estar plegado en «Otras», así que la marca «ya transferida» no siempre se ve en el mapa (el registro interno sí). **No** se provocó en Windows una Papelera que realmente rechace por tamaño.
 
+### Discos virtuales reales en CI (Fase 4: NTFS, exFAT y FAT32)
+
+Cada envío ejecuta `npm run smoke:discos` en Windows: crea con `diskpart` tres discos virtuales (VHDX de 512 MB) formateados como **NTFS, exFAT y FAT32**, los monta con letra propia y prueba el motor contra ellos. Resultado de la primera ejecución (artefacto `discos`, `discos.json`):
+
+| Qué | Observación |
+|---|---|
+| Tipo y formato que devuelve `getVolumeInfo` | Los tres: tipo **`fixed`** (un VHDX montado se ve como disco fijo, no como USB) y formato correcto: **NTFS, exFAT y FAT32**. ~1,5 s por consulta (la primera, ~5 s). |
+| Copia completa (tildes, ñ, emoji, carpeta vacía, archivos de 0 bytes, 5 MB) | Verificada e **idéntica** (comparación independiente) en los tres; el origen no cambió; `verifyBatch` bien. |
+| Archivo de 4 GiB (disperso) hacia FAT32 | **Bloqueado** (`archivo-demasiado-grande`) sin escribir nada en el destino. Uno de 4 GiB − 1 byte **no** se bloquea por tamaño. En NTFS y exFAT no hay bloqueo por tamaño. |
+| Nombres con punto o espacio al final | Windows los lista y la revisión los **bloquea** (`nombres-no-validos`) en los tres formatos. Los nombres reservados (`CON`, `NUL`…) **no** se probaron en disco real (Windows los trata como dispositivos y podrían colgar la prueba): los cubren las pruebas unitarias. |
+| 3 000 archivos pequeños en una carpeta | Copiados y verificados en los tres formatos (unos 11–15 s). |
+| Verificación **rápida** y fechas | Aceptada en los tres. **Observado:** en exFAT y FAT32 la fecha de modificación del destino difiere hasta **~1,9 s** del origen (redondeo a 2 s); NTFS, 0 ms. La tolerancia de 2 s del motor alcanza, pero **con poco margen**. |
+| `verifyBatch` tras **desmontar y volver a montar** el disco | Copia sana: bien. Con un byte alterado a mano: detecta «huella». Con un archivo borrado: detecta «falta». |
+| **Disco lleno** (se llena hasta dejar 12 MB **después** de planificar) | La operación se detiene con «Sin espacio en el destino» (`ENOSPC`), estado «con errores», **original intacto**, **ningún archivo parcial**. Una revisión nueva con el disco lleno bloquea por «sin espacio». |
+
+**Lo que esto NO cubre:** un **USB físico** (velocidad, controladores, sistemas de archivos de fábrica raros, discos que se duermen), una **desconexión real** a mitad (un disco virtual se puede desmontar pero no «arrancar»), la **cuota real de la Papelera**, ni equipos con antivirus que interfieran.
+
 ## Qué NO garantiza (límites honestos)
 
 1. **La caché de Windows.** La verificación vuelve a leer el archivo del destino, pero Windows puede responder desde su memoria caché y no desde el disco físico. Por eso existe **«Verificar un lote»** (`verifyBatch`): conviene usarlo **después de expulsar y volver a conectar el disco**, que es cuando la lectura sí viene del disco.

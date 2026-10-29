@@ -28,6 +28,9 @@ const { SettingsStore, validatePatch } = require('./settings');
 const { listDrives, listDestinationDrives } = require('./drives');
 const { volumeInfoForPath } = require('./volume-info');
 const { TransferService } = require('../service/transfer-service');
+const { createTestDataService } = require('./datos-prueba-service');
+const TD = require('../core/datos-prueba');
+const TR = require('../core/transfer-rules');
 
 const SMOKE = process.env.BYD_SMOKE === '1' && process.argv.includes('--smoke-test');
 const INDEX_PATH = path.join(__dirname, '..', 'renderer', 'index.html');
@@ -57,12 +60,17 @@ const context = {
   // Solo la prueba automática los usa (en el uso normal siguen en null):
   smokeDestination: null,
   smokeTrashFails: false,
+  smokeDocuments: null, // solo la prueba automática en Linux (no hay carpeta Documentos real)
+  testDataBusy: false,
+  testDataAbort: null,
+  testRunIds: new Set(), // transferencias hechas en esta sesión cuyos orígenes son solo los datos de prueba
   smokeBatchFolder: null,
   closeDialogHook: null,
 };
 let mainWindow = null;
 let service = null;
 let transferService = null;
+let testData = null;
 let settings = null;
 
 /** Único lugar donde se fija la carpeta a escanear: viene del diálogo o de una unidad que el principal reconoce. */
@@ -365,6 +373,8 @@ function registerIpc() {
     try {
       const result = await transferService.run(planId);
       rememberRevealable(result);
+      // Si TODO lo copiado eran datos de prueba, se recuerda para poder quitar esa copia al borrarlos (si el usuario lo pide).
+      if (result.carpetas.length > 0 && result.carpetas.every((c) => TR.isInside(c.origen, testData.rootPath()))) context.testRunIds.add(result.runId);
       // «Verificar de nuevo la copia» usa esta carpeta de lote (confirmada por el motor, con su MANIFIESTO.json).
       if (result.batchFolder) await setBatchFolder(result.batchFolder).catch(() => {});
       return result;
@@ -424,6 +434,70 @@ function registerIpc() {
       context.transferBusy = false;
     }
   });
+
+  // ------------------------------------------------------------------- datos de prueba
+
+  handle(V.CHANNELS.appInfo, async (...args) => {
+    V.validateNoArgs(args);
+    return { name: 'BoneYardDog', version: app.getVersion(), project: 'https://github.com/amirhere1910/boneyarddog' };
+  });
+
+  handle(V.CHANNELS.testDataStatus, async (...args) => {
+    V.validateNoArgs(args);
+    return testData.status();
+  });
+
+  handle(V.CHANNELS.testDataCreate, async (...args) => {
+    V.validateNoArgs(args);
+    if (context.testDataBusy) throw new V.ValidationError('Ya se están creando los datos de prueba');
+    context.testDataBusy = true;
+    context.testDataAbort = new AbortController();
+    try {
+      return await testData.create({
+        signal: context.testDataAbort.signal,
+        onProgress: (p) => {
+          if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(V.CHANNELS.testDataProgress, p);
+        },
+      });
+    } finally {
+      context.testDataBusy = false;
+      context.testDataAbort = null;
+    }
+  });
+
+  handle(V.CHANNELS.testDataCancel, async (...args) => {
+    V.validateNoArgs(args);
+    if (context.testDataAbort) context.testDataAbort.abort();
+    return { cancelled: Boolean(context.testDataAbort) };
+  });
+
+  handle(V.CHANNELS.testDataDelete, async (options, ...rest) => {
+    V.validateNoArgs(rest);
+    const valid = V.validateTestDataDelete(options);
+    if (context.testDataBusy) throw new V.ValidationError('Se están creando los datos de prueba: espera a que termine o cancela');
+    const copies = { quitadas: 0, rechazadas: [] };
+    if (valid.removeCopies) {
+      // Solo copias hechas en ESTA sesión cuyos orígenes eran únicamente datos de prueba; el motor se niega si ya se retiró algún original.
+      for (const runId of [...context.testRunIds]) {
+        try {
+          await transferService.quitarCopiado(runId);
+          copies.quitadas++;
+          context.testRunIds.delete(runId);
+        } catch (err) {
+          copies.rechazadas.push({ runId, motivo: err && err.message ? err.message : String(err) });
+        }
+      }
+    }
+    await testData.removeRoot(); // solo con la marca y sin nada ajeno dentro; si no, lanza y no borra nada
+    return { borrado: true, copias: copies };
+  });
+
+  handle(V.CHANNELS.testDataUse, async (...args) => {
+    V.validateNoArgs(args);
+    const st = await testData.status();
+    if (!st.exists || !st.marked) throw new V.ValidationError('No hay datos de prueba creados por BoneYardDog');
+    return setChosenFolder(st.path);
+  });
 }
 
 async function start() {
@@ -442,6 +516,7 @@ async function start() {
   service.on('progress', (progress) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(V.CHANNELS.progress, progress);
   });
+  testData = createTestDataService({ documentsDir: () => context.smokeDocuments || app.getPath('documents'), version: app.getVersion() });
   // La Papelera real solo existe aquí (shell.trashItem); el hilo de transferencias se la pide a este proceso.
   const trash = (p) => (context.smokeTrashFails ? Promise.reject(new Error('Simulado por la prueba: Windows rechazó enviar a la Papelera (E_ABORT)')) : shell.trashItem(p));
   transferService = new TransferService(

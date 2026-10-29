@@ -39,6 +39,14 @@ const CHANNELS = Object.freeze({
   transferRemoveCopy: 'byd:transfer-remove-copy',
   verifyBatchChooseFolder: 'byd:verify-batch-choose-folder',
   verifyBatchRun: 'byd:verify-batch-run',
+  // Datos de prueba (Fase 4): la ruta (Documentos\\BoneYardDog-Prueba) la fija SOLO el proceso principal.
+  testDataStatus: 'byd:test-data-status',
+  testDataCreate: 'byd:test-data-create',
+  testDataCancel: 'byd:test-data-cancel',
+  testDataDelete: 'byd:test-data-delete',
+  testDataUse: 'byd:test-data-use',
+  testDataProgress: 'byd:test-data-progress',
+  appInfo: 'byd:app-info',
 });
 
 const MAX_TRANSFER_SOURCES = 500;
@@ -187,6 +195,18 @@ function validateVerifyBatchOptions(options) {
   return { mode };
 }
 
+/**
+ * Borrar los datos de prueba: { confirm: true, removeCopies?: boolean }. Sin ninguna ruta: el principal sabe
+ * cuál es la carpeta. `removeCopies` (por defecto false) pide quitar también las copias de esta sesión.
+ */
+function validateTestDataDelete(options) {
+  if (options === null || typeof options !== 'object' || Array.isArray(options)) throw new ValidationError('Las opciones deben ser un objeto');
+  for (const key of Object.keys(options)) if (key !== 'confirm' && key !== 'removeCopies') throw new ValidationError(`Dato no admitido: ${key}`);
+  if (options.confirm !== true) throw new ValidationError('Falta la confirmación para borrar los datos de prueba');
+  const removeCopies = options.removeCopies === undefined ? false : validateBoolean(options.removeCopies);
+  return { confirm: true, removeCopies };
+}
+
 /** Los canales que no reciben datos deben llamarse sin argumentos. */
 function validateNoArgs(args) {
   if (!Array.isArray(args) || args.length !== 0) throw new ValidationError('Este mensaje no admite argumentos');
@@ -249,6 +269,7 @@ module.exports = {
   validateTransferPreflight,
   validateDeleteFromResult,
   validateVerifyBatchOptions,
+  validateTestDataDelete,
   isTrustedSender,
   sameFileUrl,
 };

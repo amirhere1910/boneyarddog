@@ -43,9 +43,9 @@ const child = spawn(command, commandArgs, {
 });
 // Red de seguridad por si la app se cuelga antes de poder medir su propio tiempo.
 const killer = setTimeout(() => {
-  console.error('[smoke] La app no terminó en 200 s: se cierra a la fuerza.');
+  console.error('[smoke] La app no terminó en 300 s: se cierra a la fuerza.');
   child.kill('SIGKILL');
-}, 200_000);
+}, 300_000);
 child.on('exit', (code, signal) => {
   clearTimeout(killer);
   process.exit(code === null ? 1 : code);

@@ -30,6 +30,37 @@
     </div>
   </section>
 
+  <!-- Ayuda y pruebas: datos de prueba creados por la propia app -->
+  <details id="ayuda-pruebas" class="panel ayuda">
+    <summary>Ayuda y pruebas</summary>
+    <div class="ayuda-cuerpo">
+      <h2 id="t-datos">Datos de prueba</h2>
+      <p>Crea cinco carpetas de ejemplo en <strong>Documentos\BoneYardDog-Prueba</strong> (unos 750 MB en total, con tildes, ñ, espacios y emoji, y fechas de hace 400, 200, 100, 30 y 2 días) para probar la app sin arriesgar nada tuyo. Solo se escriben en esa carpeta y nunca más de 1 GB.</p>
+      <p id="td-estado" class="nota" role="status"></p>
+      <label class="check"><input type="checkbox" id="td-ignorar-creacion" checked> Para esta prueba, ignorar la fecha de creación</label>
+      <p class="nota">Windows pone a los archivos nuevos la fecha de creación de hoy y no se puede cambiar. Sin esta opción, todas las carpetas parecerían «recién creadas» y ninguna saldría como sin uso. (Se puede volver a activar en «Opciones avanzadas».)</p>
+      <div class="fila fila-envuelve">
+        <button id="td-crear" type="button">Crear datos de prueba</button>
+        <button id="td-cancelar" type="button" class="secundario" hidden>Cancelar</button>
+        <button id="td-escanear" type="button" class="secundario" hidden>Escanear esa carpeta ahora</button>
+        <button id="td-borrar" type="button" class="secundario" hidden>Borrar datos de prueba</button>
+      </div>
+      <div id="td-progreso" hidden>
+        <div class="barra barra-real" role="progressbar" aria-label="Creando datos de prueba" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="td-relleno" class="barra-relleno"></div></div>
+        <p id="td-progreso-texto" class="nota" role="status"></p>
+      </div>
+      <div id="td-borrar-confirmar" class="caja caja-aviso" role="group" aria-labelledby="td-borrar-titulo" hidden>
+        <h3 id="td-borrar-titulo">¿Borrar los datos de prueba?</h3>
+        <p>Se borra solo la carpeta <strong>Documentos\BoneYardDog-Prueba</strong>, y únicamente si tiene la marca de BoneYardDog y nada tuyo dentro. No toca nada más de Documentos.</p>
+        <label class="check"><input type="checkbox" id="td-quitar-copias"> También quitar las copias de esta prueba hechas en esta sesión (en los demás casos, bórralas a mano desde el Explorador: carpeta «BoneYardDog» del destino)</label>
+        <div class="fila">
+          <button id="td-borrar-si" type="button">Sí, borrar los datos de prueba</button>
+          <button id="td-borrar-no" type="button" class="secundario">No</button>
+        </div>
+      </div>
+    </div>
+  </details>
+
   <!-- 2. Escaneo -->
   <section id="vista-escaneo" class="panel" aria-labelledby="t-escaneo" hidden>
     <h2 id="t-escaneo">Escaneando…</h2>
@@ -186,6 +217,8 @@
     </div>
   </div>
 
+  <footer class="pie-app"><span id="app-version">BoneYardDog</span> · <span id="app-proyecto"></span></footer>
+
   <!-- Asistente de copiar y transferir (diálogo propio, no window.confirm) -->
   <dialog id="dlg-transferir" class="dialogo" aria-labelledby="dlg-titulo">
     <div class="dlg-cabecera">
@@ -324,5 +357,6 @@
   <script src="../shared/transfer-wizard.js"></script>
   <script src="transfer-ui.js"></script>
   <script src="app.js"></script>
+  <script src="datos-prueba-ui.js"></script>
 </body>
 </html>

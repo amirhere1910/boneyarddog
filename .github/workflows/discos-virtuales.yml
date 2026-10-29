@@ -1,0 +1,36 @@
+name: Discos virtuales (NTFS, exFAT y FAT32)
+
+# Crea con diskpart tres discos virtuales (VHDX) y ejecuta contra ellos el motor de copia y transferencia.
+# Lo observado queda en el artefacto «discos» (discos.json). Falla si se rompe una propiedad de seguridad.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  discos:
+    name: Copiar a discos NTFS, exFAT y FAT32 reales (virtuales)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: "Instalar dependencias (sin descargar Electron, aquí no hace falta)"
+        run: npm ci --ignore-scripts
+      - name: Mostrar unidades y espacio antes de empezar
+        shell: pwsh
+        run: |
+          Get-Volume | Format-Table DriveLetter, FileSystem, DriveType, Size, SizeRemaining -AutoSize
+          whoami /groups | Select-String "High Mandatory Level"
+      - name: Probar el motor contra los discos virtuales
+        run: npm run smoke:discos
+      - name: Guardar lo observado
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: discos
+          path: smoke-artifacts/discos.json
+          if-no-files-found: warn

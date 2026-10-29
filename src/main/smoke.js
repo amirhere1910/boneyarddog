@@ -15,21 +15,29 @@
  *     lo guardado en settings.json coincide.
  *  5. Comprueba el aislamiento de la ventana y el bloqueo de red.
  *  6. Guarda smoke-artifacts/mapa.png, lista.png y resultado.json; termina con código
- *     0 o 1 (máximo 150 s).
+ *     0 o 1 (máximo 240 s).
  */
 
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { splitAbsolute } = require('../core/transfer');
+const TD = require('../core/datos-prueba');
 const { sameFileUrl } = require('./validate');
 const { isProtectedPath } = require('../core/protected');
 
 // BYD_SMOKE_TIMEOUT_MS solo existe para probar la ruta de tiempo agotado.
-const TIME_LIMIT_MS = Number(process.env.BYD_SMOKE_TIMEOUT_MS) || 150_000;
+const TIME_LIMIT_MS = Number(process.env.BYD_SMOKE_TIMEOUT_MS) || 240_000;
 const DAY = 24 * 60 * 60 * 1000;
 
 const BRIDGE_KEYS = [
+  'getAppInfo',
+  'onTestDataProgress',
+  'testDataCancel',
+  'testDataCreate',
+  'testDataDelete',
+  'testDataStatus',
+  'testDataUse',
   'chooseDestination',
   'chooseDestinationDrive',
   'listDestinationDrives',
@@ -71,7 +79,8 @@ function write(file, bytes, mtimeDaysAgo, atimeDaysAgo = mtimeDaysAgo) {
  * Con período = 90 días: muy reciente <= 30, reciente <= 90, sin movimiento <= 180, muy antigua > 180.
  */
 function buildFixture(app) {
-  const base = path.join(app.getAppPath(), '.smoke-data');
+  // BYD_SMOKE_DATA existe para la app INSTALADA: así no se escribe nada dentro de la carpeta de instalación.
+  const base = process.env.BYD_SMOKE_DATA || path.join(app.getAppPath(), '.smoke-data');
   fs.mkdirSync(base, { recursive: true });
   const root = fs.mkdtempSync(path.join(base, 'datos-'));
   const dir = (name) => path.join(root, name);
@@ -313,7 +322,7 @@ const READ_ISOLATION = `(async () => {
 
 function run({ app, win, context, service, settings, indexUrl, fixture }) {
   const started = Date.now();
-  const outDir = path.join(app.getAppPath(), 'smoke-artifacts');
+  const outDir = process.env.BYD_SMOKE_OUT || path.join(app.getAppPath(), 'smoke-artifacts');
   fs.mkdirSync(outDir, { recursive: true });
   const report = { ok: false, checks: [], startedAt: new Date(started).toISOString() };
   const settingsFile = path.join(app.getPath('userData'), 'settings.json');
@@ -720,6 +729,108 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
     win.setSize(1100, 1000);
   }
 
+  // --- Datos de prueba creados por la propia app (Documentos\\BoneYardDog-Prueba) -------------------------------
+  async function pollJs(expr, what, ms = 100_000) {
+    const t0 = Date.now();
+    for (;;) {
+      const v = await js(expr);
+      if (v) return v;
+      if (Date.now() - t0 > ms || Date.now() - started > TIME_LIMIT_MS) throw new Error(`Se agotó el tiempo esperando: ${what} :: ${JSON.stringify(await js("document.getElementById('td-estado').textContent"))}`);
+      await sleep(100);
+    }
+  }
+
+  async function testDataScenarios() {
+    win.setSize(1100, 1000);
+    await sleep(300);
+    // En Windows se usa la carpeta Documentos REAL del equipo; en Linux (sin Documentos) una carpeta de prueba.
+    if (process.platform !== 'win32') {
+      context.smokeDocuments = path.join(fixture.base, 'Documentos');
+      fs.mkdirSync(context.smokeDocuments, { recursive: true });
+    }
+    const docs = context.smokeDocuments || app.getPath('documents');
+    const root = path.join(docs, TD.ROOT_NAME);
+    const sentinel = path.join(docs, `.byd-smoke-centinela-${process.pid}.txt`);
+    report.testData = { documents: docs, root };
+    check('datos de prueba: la carpeta de pruebas no existía antes', !fs.existsSync(root), root);
+    fs.writeFileSync(sentinel, 'algo mío que NO debe tocarse');
+    await js("document.getElementById('btn-nuevo').click()");
+    await waitFor((s) => s.estado === 'inicio', 'volver al inicio (datos de prueba)');
+    const info0 = await js(`({ version: document.getElementById('app-version').textContent, proyecto: document.getElementById('app-proyecto').textContent })`);
+    check('versión: el pie muestra la versión de package.json y la dirección del proyecto como texto', info0.version.includes(require('../../package.json').version) && /github\.com\/amirhere1910\/boneyarddog/.test(info0.proyecto), info0);
+    await realClick(await cellRect('#ayuda-pruebas > summary'));
+    await pollJs(`document.getElementById('td-estado').textContent`, 'el estado de los datos de prueba');
+    const st0 = await js(`({ estado: document.getElementById('td-estado').textContent, crear: !document.getElementById('td-crear').hidden, borrar: !document.getElementById('td-borrar').hidden })`);
+    check('datos de prueba: sin datos, solo se ofrece «Crear datos de prueba»', st0.estado === 'Todavía no hay datos de prueba.' && st0.crear && !st0.borrar, st0);
+    await realClick(await cellRect('#td-crear'));
+    const t0 = Date.now();
+    const created = await pollJs(`(() => { const e = document.getElementById('td-estado').textContent; return /^Listo:|^No se crearon|cancelada/.test(e) ? e : null; })()`, 'crear los datos de prueba');
+    report.testData.msCrear = Date.now() - t0;
+    check('datos de prueba: «Crear» termina con «Listo»', /^Listo: 5 carpetas/.test(created), created);
+    const plan = TD.PLAN;
+    const mismatches = [];
+    for (const folder of plan) {
+      for (const f of folder.files) {
+        const p = path.join(root, folder.name, ...f.path.split('/'));
+        let st = null;
+        try {
+          st = fs.statSync(p);
+        } catch {
+          mismatches.push(`falta ${p}`);
+          continue;
+        }
+        if (st.size !== f.bytes) mismatches.push(`${p}: tamaño ${st.size} ≠ ${f.bytes}`);
+        const days = (Date.now() - st.mtimeMs) / DAY;
+        if (Math.abs(days - folder.daysAgo) > 1) mismatches.push(`${p}: ${days.toFixed(1)} días ≠ ${folder.daysAgo}`);
+      }
+      for (const d of folder.emptyDirs) if (!fs.existsSync(path.join(root, folder.name, ...d.split('/')))) mismatches.push(`falta la carpeta vacía ${d}`);
+    }
+    check('datos de prueba (EN DISCO): 5 carpetas, nombres con tildes/ñ/emoji, tamaños exactos y fechas de modificación de 400, 200, 100, 30 y 2 días', mismatches.length === 0 && fs.readdirSync(root).length === 6, mismatches.slice(0, 5));
+    const mark = TD.parseMarker(fs.readFileSync(path.join(root, TD.MARK_NAME), 'utf8'));
+    check('datos de prueba (EN DISCO): la marca .byd-prueba existe y es válida', mark && mark.carpetas.length === 5, mark);
+    // Datos sin repetir: dos archivos distintos del mismo tamaño no tienen el mismo contenido.
+    const a = fs.readFileSync(path.join(root, plan[0].name, 'Playa', 'foto 01.jpg')).subarray(0, 65536);
+    const b = fs.readFileSync(path.join(root, plan[0].name, 'Playa', 'foto 02.jpg')).subarray(0, 65536);
+    check('datos de prueba (EN DISCO): los archivos no repiten datos (verificar es significativo)', Buffer.compare(a, b) !== 0, null);
+    const afterCreate = await js(`({ crear: !document.getElementById('td-crear').hidden, escanear: !document.getElementById('td-escanear').hidden, borrar: !document.getElementById('td-borrar').hidden })`);
+    check('datos de prueba: tras crear se ofrece escanear y borrar (ya no crear)', !afterCreate.crear && afterCreate.escanear && afterCreate.borrar, afterCreate);
+
+    // Escanear esa carpeta con «ignorar la fecha de creación» (marcada por defecto).
+    await realClick(await cellRect('#td-escanear'));
+    await settled((s) => s.mapa.carpeta === root && s.mapa.celdas.length > 0, 'el mapa de los datos de prueba');
+    await js("document.getElementById('tab-lista').click()");
+    const L = await settled((s) => s.pestana === 'lista' && s.lista.items.length > 0, 'la lista de los datos de prueba');
+    const wanted = plan.filter((f) => f.daysAgo > 90).map((f) => f.name).sort();
+    check('datos de prueba: con la fecha de creación ignorada, salen como sin uso las de 400, 200 y 100 días (y no las de 30 y 2)', JSON.stringify(L.lista.items.map((i) => i.nombre).sort()) === JSON.stringify(wanted), L.lista.items.map((i) => i.nombre));
+    check('datos de prueba: la opción quedó guardada (useCreationTime = false)', savedSettings().useCreationTime === false, savedSettings());
+
+    // Borrar: primero SIN marca (no debe borrar nada), después con marca.
+    await js("document.getElementById('btn-nuevo').click()");
+    await waitFor((s) => s.estado === 'inicio', 'volver al inicio (borrar)');
+    const markText = fs.readFileSync(path.join(root, TD.MARK_NAME), 'utf8');
+    fs.unlinkSync(path.join(root, TD.MARK_NAME));
+    await realClick(await cellRect('#ayuda-pruebas > summary')).catch(() => {});
+    await js(`document.getElementById('ayuda-pruebas').open = true; document.getElementById('ayuda-pruebas').dispatchEvent(new Event('toggle'))`);
+    await sleep(500);
+    const noMark = await js(`({ estado: document.getElementById('td-estado').textContent, borrar: !document.getElementById('td-borrar').hidden })`);
+    check('datos de prueba: sin la marca la app dice que no es suya y NO ofrece borrar', /NO es de la app/.test(noMark.estado) && !noMark.borrar, noMark);
+    check('datos de prueba (EN DISCO): sin marca no se borra nada', fs.existsSync(path.join(root, plan[0].name, 'Playa', 'foto 01.jpg')), null);
+    fs.writeFileSync(path.join(root, TD.MARK_NAME), markText);
+    await js(`document.getElementById('ayuda-pruebas').dispatchEvent(new Event('toggle'))`);
+    await pollJs(`!document.getElementById('td-borrar').hidden`, 'el botón de borrar');
+    await realClick(await cellRect('#td-borrar'));
+    await realClick(await cellRect('#td-borrar-no'));
+    check('datos de prueba (EN DISCO): «No» en la confirmación no borra nada', fs.existsSync(root), null);
+    await realClick(await cellRect('#td-borrar'));
+    await realClick(await cellRect('#td-borrar-si'));
+    await pollJs(`/^Datos de prueba borrados/.test(document.getElementById('td-estado').textContent)`, 'borrar los datos de prueba');
+    check('datos de prueba (EN DISCO): con la marca se borra la carpeta de pruebas', !fs.existsSync(root), root);
+    check('datos de prueba (EN DISCO): lo demás de Documentos (el centinela) NO se tocó', fs.existsSync(sentinel) && fs.readFileSync(sentinel, 'utf8') === 'algo mío que NO debe tocarse', sentinel);
+    fs.rmSync(sentinel, { force: true });
+    const end = await js(`({ crear: !document.getElementById('td-crear').hidden, borrar: !document.getElementById('td-borrar').hidden })`);
+    check('datos de prueba: tras borrar vuelve a ofrecerse «Crear»', end.crear && !end.borrar, end);
+  }
+
   (async () => {
     try {
       check('las carpetas de ejemplo no están en una ruta protegida', !isProtectedPath(fixture.root), fixture.root);
@@ -1027,6 +1138,7 @@ function run({ app, win, context, service, settings, indexUrl, fixture }) {
       check('la carpeta 501 no quedó marcada', !cellOf(over, path.join(manyRoot, 'Reciente1')).seleccionada, null);
 
       await wizardScenarios();
+      await testDataScenarios();
 
       const finalSettings = savedSettings();
       check('settings.json con el esquema esperado', finalSettings.version === 1 && finalSettings.staleDays === 90 && finalSettings.minSizeBytes === 1000 && finalSettings.mapMinBytes === 1000, finalSettings);
