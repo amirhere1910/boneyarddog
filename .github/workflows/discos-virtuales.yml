@@ -18,7 +18,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Instalar dependencias (sin descargar Electron: aquí no hace falta)
+      - name: "Instalar dependencias (sin descargar Electron, aquí no hace falta)"
         run: npm ci --ignore-scripts
       - name: Mostrar unidades y espacio antes de empezar
         shell: pwsh
