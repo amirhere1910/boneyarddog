@@ -20,5 +20,5 @@ jobs:
       - name: Diagnóstico (temporal) de copia-simple en Windows
         if: runner.os == 'Windows'
         continue-on-error: true
-        run: node test/copia-simple.test.js
+        run: node scripts/_dbg-win.js
       - run: npm test
