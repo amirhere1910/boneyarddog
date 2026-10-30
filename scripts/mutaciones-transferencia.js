@@ -14,6 +14,8 @@ const { spawnSync } = require('node:child_process');
 
 const FILE = path.join(__dirname, '..', 'src', 'core', 'transfer.js');
 const original = fs.readFileSync(FILE, 'utf8');
+const SERVICE_FILE = path.join(__dirname, '..', 'src', 'service', 'transfer-service.js');
+const serviceOriginal = fs.readFileSync(SERVICE_FILE, 'utf8');
 
 function once(find, replace) {
   return (src) => {
@@ -26,33 +28,25 @@ function once(find, replace) {
 /** Varias mutaciones juntas. */
 const chain = (...fns) => (src) => fns.reduce((acc, f) => f(acc), src);
 
-/** Retirar el original ANTES de verificar: se mueve el bloque de verificación después de la retirada. */
-function reorder(src) {
-  const startMark = '        // Verificación.\n';
-  const endMark = '        // Carpetas: fechas (de las hojas hacia la raíz)';
-  const a = src.indexOf(startMark);
-  const b = src.indexOf(endMark);
-  if (a === -1 || b === -1 || b < a) throw new Error('No se encontró el bloque de verificación');
-  const block = src.slice(a + startMark.length, b);
-  let without = src.slice(0, a) + src.slice(b);
-  const anchor = '      man.resultado = result.resultado;\n      results.push(result);';
-  if (!without.includes(anchor)) throw new Error('No se encontró el punto de inserción');
-  const late = `      try {\n        const fileEntries = folder.entries.filter((e) => e.type === 'file');\n${block}\n      } catch (err) {\n        errores.push({ ruta: '', codigo: 'VERIF', mensaje: String(err.message) });\n      }\n`;
-  without = without.replace(anchor, () => late + anchor);
-  return without;
-}
-
 const MUTATIONS = [
   { nombre: 'saltar la comparación de huellas', fn: once('if (sha !== srcRec.sha256) {', 'if (false) {') },
   { nombre: 'retirar el original sin verificar', fn: once("if (plan.mode === 'move' && result.resultado === 'copiada-verificada' && result.verificada) {", "if (plan.mode === 'move' && result.resultado !== 'cancelada') {") },
   { nombre: 'permitir sobrescribir (abrir con "w" en vez de "wx")', fn: once("fsp.open(destPath, 'wx')", "fsp.open(destPath, 'w')") },
   { nombre: 'omitir la comprobación de "el origen no cambió"', fn: once('if (changed) {', 'if (false) {') },
   { nombre: 'ignorar el impedimento de FAT32 (archivo demasiado grande)', fn: once('if (tooBig.length) {', 'if (false) {') },
-  { nombre: 'cambiar el orden: retirar antes de verificar', fn: reorder },
+  { nombre: 'renombrar a su nombre final SIN verificar (aunque haya errores)', fn: once('if (errores.length > 0) {\n          result.resultado = \'con-errores\';\n          result.motivo = `${errores.length} problema(s) al copiar o verificar.', 'if (false) {\n          result.resultado = \'con-errores\';\n          result.motivo = `${errores.length} problema(s) al copiar o verificar.') },
+  { nombre: 'copiar DIRECTO al nombre final (sin carpeta provisional)', fn: once('const workPath = nodePath.join(destRoot, names.workName);', 'const workPath = nodePath.join(destRoot, names.finalName);') },
+  { nombre: 'SOBRESCRIBIR en el renombrado final (no comprobar que el nombre final no existe)', fn: once("    if (exists) return { ok: false, reason: 'ya existe algo con ese nombre' };\n", '') },
+  { nombre: '(5) no usar «(2)»: mezclar con lo que ya existe con ese nombre', fn: once('for (let n = 2; has(finalName); n++) finalName = `${base} (${n})`;', '') },
+  { nombre: '(5) cancelar o fallar sin limpiar la copia incompleta', fn: once('if (ctx.workCreated && !ctx.renamed && !ctx.keepWork) {', 'if (false) {') },
+  { nombre: '(5) la copia en el destino ya no se exige DENTRO del destino elegido al borrar el original', fn: once('if (!strictlyInside(realDest, realRoot) || ', 'if (') },
+  { nombre: '(5) limpiar copias incompletas sin consultar el diario de la app', fn: once('entry.ruta !== ruta || ', '') },
+  { nombre: '(5) limpiar copias incompletas siguiendo enlaces', fn: once('if (st.isSymbolicLink() || !st.isDirectory()) throw new Error(\'Esa ruta no es una carpeta normal: no se toca\');', '') },
+  { nombre: '(5) verificar: decir «bien» con 0 archivos comprobados', fn: once("const estado = real.length > 0 ? 'problemas' : checked === 0 ? 'sin-archivos' : 'ok';", "const estado = real.length > 0 ? 'problemas' : 'ok';") },
   { nombre: '(extra) quitarCopiado sin comprobar la ruta real (enlaces intermedios)', fn: once('!strictlyInside(p, container) || !(await parentReallyInside(p, container))', '!strictlyInside(p, container)') },
   { nombre: '(extra) no volver a comprobar la protección antes de retirar', fn: once('} else if (isProtected(folder.source)) {', '} else if (false) {') },
   { nombre: '(extra) retirar el original aunque haya enlaces o ilegibles', fn: once('} else if (folder.links.length || folder.unreadable.length || folder.special.length) {', '} else if (false) {') },
-  { nombre: '(extra) quitarCopiado sin negarse cuando ya se retiró un original', fn: once("if (disposed.length) throw new Error(", 'if (false) throw new Error(') },
+  { nombre: '(extra) quitarCopiado sin negarse cuando ya se retiró un original', fn: once("resultado.carpetas.some((c) => ['original-enviado-a-papelera', 'original-borrado-definitivamente', 'borrado-parcial'].includes(c.resultado))) {\n      throw new Error('No se puede quitar la copia", "false) {\n      throw new Error('No se puede quitar la copia") },
   { nombre: '(extra) no revisar que el destino no esté dentro del origen', fn: once('if (R.isInside(destinationRoot, g) || R.isInside(destEff, effList[i])) {', 'if (false) {') },
   { nombre: '(3B) borrado definitivo: borrar sin verificar la copia', fn: once("if (verified !== true || verify !== 'full') return keep(", 'if (false) return keep(') },
   { nombre: '(3B) borrado definitivo: borrar sin confirmación', fn: once("if (confirm !== true) return keep('Falta la confirmación del borrado definitivo: el original sigue", "if (false) return keep('Falta la confirmación del borrado definitivo: el original sigue") },
@@ -74,8 +68,14 @@ const MUTATIONS = [
   { nombre: '(extra) no avisar ni bloquear la falta de espacio', fn: once('if (info.freeBytes < required) {', 'if (false) {') },
 ];
 
+MUTATIONS.push(
+  { nombre: '(4c) perro guardián: nunca corta el hilo colgado', archivo: SERVICE_FILE, fn: once('active.timer = setTimeout(() => this._forceCancel(active), this._cancelGraceMs);', 'active.timer = setTimeout(() => {}, this._cancelGraceMs);') },
+  { nombre: '(4c) perro guardián: corta el hilo pero no devuelve el resultado', archivo: SERVICE_FILE, fn: once('    if (!entry) return;\n    if (active.method', '    return;\n    if (active.method') },
+  { nombre: '(4c) perro guardián: no avisa de la carpeta provisional exacta', archivo: SERVICE_FILE, fn: once("const aviso = nombres.length", 'const aviso = false') },
+);
+
 function runTests() {
-  const r = spawnSync(process.execPath, ['--test', 'test/transfer.test.js', 'test/transfer-service.test.js'], { cwd: path.join(__dirname, '..'), encoding: 'utf8' });
+  const r = spawnSync(process.execPath, ['--test', 'test/transfer.test.js', 'test/transfer-service.test.js', 'test/copia-simple.test.js', 'test/transfer-wizard.test.js'], { cwd: path.join(__dirname, '..'), encoding: 'utf8' });
   const out = `${r.stdout}\n${r.stderr}`;
   const grab = (k) => Number((new RegExp(`^# ${k} (\\d+)`, 'm').exec(out) || [])[1] || 0);
   return { fail: grab('fail'), pass: grab('pass'), status: r.status, firstFailure: (/^not ok \d+ - (.+)$/m.exec(out) || [])[1] || null };
@@ -93,17 +93,20 @@ const selected = filter ? MUTATIONS.filter((m) => m.nombre.includes(filter)) : M
 let survivors = 0;
 try {
   for (const m of selected) {
-    const mutated = m.fn(original);
-    if (mutated === original) throw new Error(`La mutación no cambió nada: ${m.nombre}`);
-    fs.writeFileSync(FILE, mutated);
+    const target = m.archivo || FILE;
+    const base0 = m.archivo ? serviceOriginal : original;
+    const mutated = m.fn(base0);
+    if (mutated === base0) throw new Error(`La mutación no cambió nada: ${m.nombre}`);
+    fs.writeFileSync(target, mutated);
     const res = runTests();
-    fs.writeFileSync(FILE, original);
+    fs.writeFileSync(target, base0);
     const detected = res.fail > 0 || res.status !== 0;
     if (!detected) survivors++;
     console.log(`${detected ? 'DETECTADA ' : 'SOBREVIVIÓ '} ${m.nombre}\n    pruebas que fallaron: ${res.fail}${res.firstFailure ? ` (p. ej. «${res.firstFailure}»)` : ''}`);
   }
 } finally {
   fs.writeFileSync(FILE, original);
+  fs.writeFileSync(SERVICE_FILE, serviceOriginal);
 }
 console.log(`\n${selected.length - survivors} de ${selected.length} mutaciones detectadas.`);
 process.exit(survivors === 0 ? 0 : 1);

@@ -7,11 +7,15 @@
  * En Windows crea con `diskpart` tres discos virtuales (VHDX de 512 MB), los monta con letra propia y ejecuta
  * contra ellos el motor de verdad:
  *   (a) tipo y formato que devuelve `getVolumeInfo` (se anota lo observado, sin suponer);
- *   (b) copia con verificación completa (tildes, ñ, emoji, carpeta vacía, archivos de 0 bytes), comparada aparte;
+ *   (b) copia SIMPLE a la RAÍZ de la unidad (E:\): queda <unidad>\<nombre>, idéntica (comparada aparte), sin archivos extra,
+ *       con verificación completa (tildes, ñ, emoji, carpeta vacía, archivos de 0 bytes);
+ *   (h) destino `C:\` (la unidad del sistema): bloqueado con el mensaje nuevo;
+ *   (i) archivo GRANDE (NTFS y exFAT: uno solo; FAT32: varios de menos de 4 GiB) por el servicio y su hilo, con tiempos, eventos de
+ *       progreso, velocidad y memoria, comparado con una copia simple de Node; origen en otra unidad y en el mismo disco;
  *   (c) un archivo de 4 GiB (disperso) y de 4 GiB − 1 byte: FAT32 debe BLOQUEAR el primero sin escribir nada;
  *   (d) nombres que Windows no admite (punto o espacio al final) y 3 000 archivos pequeños en una carpeta;
  *   (f) verificación RÁPIDA con fechas de milisegundos raros (FAT guarda con 2 s de precisión);
- *   (g) `verifyBatch` tras desmontar y volver a montar el disco (como expulsar y reconectar) detecta un archivo alterado;
+ *   (g) `verifyRecord` (el registro del PC) tras desmontar y volver a montar el disco detecta un archivo alterado o faltante;
  *   (e) disco lleno: se llena hasta el borde DESPUÉS de planificar; error claro, original intacto, nada parcial.
  * Guarda smoke-artifacts/discos.json con TODO lo observado (incluidas las sorpresas) y termina con código 0, o 1 si se
  * rompe una propiedad de seguridad (original perdido sin copia verificada, sobrescritura, copia dañada aceptada...).
@@ -25,6 +29,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const { createTransferEngine } = require('../src/core/transfer');
+const { createRegistry } = require('../src/core/registro');
+const { TransferService } = require('../src/service/transfer-service');
 const { getVolumeInfo, volumeInfoForPath } = require('../src/main/volume-info');
 
 const SIMULATED = process.argv.includes('--simulado');
@@ -32,6 +38,8 @@ const IS_WIN = process.platform === 'win32';
 const GIB = 1024 ** 3;
 const MIB = 1024 ** 2;
 const DAY = 24 * 60 * 60 * 1000;
+const BIG_MB = Number(process.env.BYD_BIG_MB) || (SIMULATED ? 64 : 5900); // archivo grande de (i): ~5,8 GB en Windows real
+const BIG_DISK_MB = SIMULATED ? 512 : Math.max(512, BIG_MB * 2 + 1024);
 const FORMATS = [
   { name: 'NTFS', diskpart: 'ntfs' },
   { name: 'exFAT', diskpart: 'exfat' },
@@ -138,11 +146,50 @@ function freeLetters(n) {
   return out;
 }
 
+/** Escribe archivos grandes (incompresibles, cada bloque distinto) por bloques de 8 MiB. Devuelve las rutas. */
+function makeBig(dir, totalMB, maxFileMB) {
+  fs.mkdirSync(dir, { recursive: true });
+  const parts = Math.max(1, Math.ceil(totalMB / maxFileMB));
+  const block = crypto.randomBytes(8 * MIB);
+  const files = [];
+  for (let i = 0; i < parts; i++) {
+    const mb = i === parts - 1 ? totalMB - maxFileMB * (parts - 1) : maxFileMB;
+    const file = path.join(dir, parts === 1 ? 'grande.bin' : `parte ${i + 1}.bin`);
+    const fd = fs.openSync(file, 'w');
+    for (let off = 0, n = 0; off < mb * MIB; n++) {
+      const len = Math.min(block.length, mb * MIB - off);
+      block.writeUInt32LE(n + i * 1000003, 0);
+      fs.writeSync(fd, block, 0, len);
+      off += len;
+    }
+    fs.closeSync(fd);
+    files.push(file);
+  }
+  return files;
+}
+
+const sizeTree = (dir) => {
+  let total = 0;
+  for (const n of fs.readdirSync(dir)) {
+    const st = fs.lstatSync(path.join(dir, n));
+    total += st.isDirectory() ? sizeTree(path.join(dir, n)) : st.size;
+  }
+  return total;
+};
+
+/** Copia simple de Node (sin motor) para comparar tiempos: el mismo archivo, el mismo disco. */
+async function nodeBaseline(files, destDir) {
+  fs.mkdirSync(destDir, { recursive: true });
+  const t0 = Date.now();
+  for (const f of files) await require('node:stream/promises').pipeline(fs.createReadStream(f, { highWaterMark: 8 * MIB }), fs.createWriteStream(path.join(destDir, path.basename(f)), { flags: 'wx' }));
+  return Date.now() - t0;
+}
+
 // ------------------------------------------------------------------------------------ discos virtuales
 
 function createDisk(work, fmt, letter) {
   const file = path.join(work, `${fmt.name}.vhdx`);
-  const r = diskpart([`create vdisk file="${file}" maximum=512 type=expandable`, 'attach vdisk', 'create partition primary', `format fs=${fmt.diskpart} quick label=BYD${fmt.name}`, `assign letter=${letter}`]);
+  const r = diskpart([`create vdisk file="${file}" maximum=${BIG_DISK_MB} type=expandable`, 'attach vdisk', 'create partition primary', `format fs=${fmt.diskpart} quick label=BYD${fmt.name}`, `assign letter=${letter}`]);
   return { file, letter, root: `${letter}:\\`, diskpartOut: r.out, status: r.status };
 }
 
@@ -196,7 +243,8 @@ async function main() {
     }
     return volumeInfoForPath(p);
   };
-  const mkEngine = (extra = {}) => createTransferEngine({ volumeInfo: infoOf, trash: null, appVersion: 'discos', ...extra });
+  const registry = createRegistry({ dir: path.join(work, 'registros') });
+  const mkEngine = (extra = {}) => createTransferEngine({ volumeInfo: infoOf, trash: null, appVersion: 'discos', registry, ...extra });
 
   for (const fmt of FORMATS) {
     const disk = disks[fmt.name];
@@ -239,16 +287,21 @@ async function main() {
     const beforeB = snapshot(treeB);
     await step('b_copia_completa', async () => {
       const e = mkEngine();
-      const pf = await e.preflight({ sources: [treeB], destinationRoot: dest, mode: 'copy', verify: 'full' });
-      const entry = { bloqueos: pf.blockers.map((b) => [b.code, b.message]), avisos: pf.warnings.map((w) => w.code) };
+      const pf = await e.preflight({ sources: [treeB], destinationRoot: disk.root, mode: 'copy', verify: 'full' });
+      const entry = { destinoRaiz: disk.root, bloqueos: pf.blockers.map((b) => [b.code, b.message]), avisos: pf.warnings.map((w) => w.code) };
       if (!pf.plan) {
-        violation(`${tag('b')}: el preflight bloqueó una copia normal: ${JSON.stringify(entry.bloqueos)}`);
+        violation(`${tag('b')}: el preflight bloqueó una copia a la RAÍZ de la unidad: ${JSON.stringify(entry.bloqueos)}`);
         return entry;
       }
       const r = await e.run(pf.plan);
       const c = r.carpetas[0];
-      batchB = r.batchFolder;
+      batchB = c.registroId;
       copyB = c.destino;
+      entry.rutaFinal = c.destino;
+      entry.contenidoDeLaRaiz = (listing(disk.root) || []).filter((n) => !/^(System Volume Information|\$RECYCLE\.BIN)$/i.test(n) && !n.startsWith('destino'));
+      if (c.destino !== path.join(disk.root, 'Datos ñandú 🐕')) violation(`${tag('b')}: la copia no quedó en <unidad>\\<nombre> (quedó en ${c.destino})`);
+      if (entry.contenidoDeLaRaiz.length !== 1) violation(`${tag('b')}: la raíz tiene algo más que la carpeta copiada: ${JSON.stringify(entry.contenidoDeLaRaiz)}`);
+      if (listing(c.destino) && ['ESTADO.json', 'MANIFIESTO.json', 'LEEME.txt'].some((n) => (listing(c.destino) || []).includes(n))) violation(`${tag('b')}: la copia lleva archivos extra de BoneYardDog`);
       entry.estado = r.estado;
       entry.resultado = c.resultado;
       entry.errores = c.errores.slice(0, 5);
@@ -259,9 +312,10 @@ async function main() {
       if (c.resultado !== 'copiada-verificada') violation(`${tag('b')}: no quedó verificada: ${c.resultado} ${JSON.stringify(c.errores.slice(0, 3))}`);
       if (!entry.contenidoIgual) violation(`${tag('b')}: la copia NO es igual al origen (comparación independiente)`);
       if (!entry.origenIntacto) violation(`${tag('b')}: el origen cambió en una copia`);
-      const v = await e.verifyBatch(r.batchFolder, { mode: 'full' });
-      entry.verifyBatch = { ok: v.ok, problemas: v.problemas.length };
-      if (!v.ok) violation(`${tag('b')}: verifyBatch detectó problemas en una copia recién hecha`);
+      const rec = await registry.get(c.registroId);
+      const v = rec ? await e.verifyRecord(rec, { mode: 'full' }) : { estado: 'sin-registro', problemas: [] };
+      entry.verifyRecord = { estado: v.estado, verificados: v.verificados, problemas: v.problemas.length };
+      if (v.estado !== 'ok') violation(`${tag('b')}: verifyRecord no dio «ok» en una copia recién hecha (${v.estado})`);
       return entry;
     });
 
@@ -388,8 +442,8 @@ async function main() {
       return entry;
     });
 
-    // (g) verifyBatch tras desmontar y volver a montar
-    await step('g_verifybatch_tras_remontar', async () => {
+    // (g) verifyRecord tras desmontar y volver a montar
+    await step('g_verifyrecord_tras_remontar', async () => {
       if (!batchB) {
         pending(`${tag('g')}: no hay copia de (b) para verificar`);
         return { omitido: true };
@@ -398,21 +452,22 @@ async function main() {
       const entry = {};
       if (SIMULATED) entry.remontar = 'simulado: no se desmonta nada';
       else entry.remontar = await remountDisk(disk);
-      const ok = await e.verifyBatch(batchB, { mode: 'full' });
-      entry.despuesDeRemontar = { ok: ok.ok, verificados: ok.verificados, problemas: ok.problemas.length };
-      if (!ok.ok) violation(`${tag('g')}: verifyBatch dice que hay problemas tras remontar una copia sana (${JSON.stringify(ok.problemas.slice(0, 3))})`);
+      const rec = await registry.get(batchB);
+      const ok = await e.verifyRecord(rec, { mode: 'full' });
+      entry.despuesDeRemontar = { estado: ok.estado, verificados: ok.verificados, problemas: ok.problemas.length };
+      if (ok.estado !== 'ok' || !(ok.verificados > 0)) violation(`${tag('g')}: verifyRecord dice «${ok.estado}» (${ok.verificados} verificados) tras remontar una copia sana (${JSON.stringify(ok.problemas.slice(0, 3))})`);
       // Se altera a mano un archivo (un byte) y se borra otro.
       const target = path.join(copyB, 'sub ñ', 'hondo', 'x.bin');
       const bytes = fs.readFileSync(target);
       bytes[10] ^= 0xff;
       fs.writeFileSync(target, bytes);
-      const bad = await e.verifyBatch(batchB, { mode: 'full' });
-      entry.conArchivoAlterado = { ok: bad.ok, problemas: bad.problemas.map((p) => [p.ruta, p.problema]) };
-      if (bad.ok || !bad.problemas.some((p) => p.problema === 'huella')) violation(`${tag('g')}: verifyBatch NO detectó un archivo alterado a mano`);
+      const bad = await e.verifyRecord(rec, { mode: 'full' });
+      entry.conArchivoAlterado = { estado: bad.estado, problemas: bad.problemas.map((p) => [p.ruta, p.problema]) };
+      if (bad.estado === 'ok' || !bad.problemas.some((p) => p.problema === 'huella')) violation(`${tag('g')}: verifyRecord NO detectó un archivo alterado a mano`);
       fs.unlinkSync(path.join(copyB, 'a.txt'));
-      const gone = await e.verifyBatch(batchB, { mode: 'full' });
-      entry.conArchivoFaltante = { ok: gone.ok, problemas: gone.problemas.map((p) => [p.ruta, p.problema]) };
-      if (gone.ok || !gone.problemas.some((p) => p.problema === 'falta')) violation(`${tag('g')}: verifyBatch NO detectó un archivo faltante`);
+      const gone = await e.verifyRecord(rec, { mode: 'full' });
+      entry.conArchivoFaltante = { estado: gone.estado, problemas: gone.problemas.map((p) => [p.ruta, p.problema]) };
+      if (gone.estado === 'ok' || !gone.problemas.some((p) => p.problema === 'falta')) violation(`${tag('g')}: verifyRecord NO detectó un archivo faltante`);
       return entry;
     });
 
@@ -435,9 +490,19 @@ async function main() {
       // Se llena el disco hasta dejar unos 12 MB libres.
       const st = fs.statfsSync(disk.root);
       const free = Number(st.bavail) * Number(st.bsize);
-      const filler = path.join(disk.root, 'relleno.bin');
-      const fillBytes = free - 12 * MIB;
-      const t = run('fsutil', ['file', 'createnew', filler, String(fillBytes)]);
+      // Varios archivos de relleno: FAT32 no admite uno solo de 4 GiB o más (y el disco ahora es grande para el archivo grande de (i)).
+      const fillers = [];
+      let remaining = free - 12 * MIB;
+      const t = { out: '' };
+      for (let n = 0; remaining > 0; n++) {
+        const chunk = Math.min(remaining, 3800 * MIB);
+        const f = path.join(disk.root, `relleno-${n}.bin`);
+        const r = run('fsutil', ['file', 'createnew', f, String(chunk)]);
+        t.out += `${r.out.trim().slice(0, 80)} `;
+        if (!fs.existsSync(f)) break;
+        fillers.push(f);
+        remaining -= chunk;
+      }
       const st2 = fs.statfsSync(disk.root);
       entry.libreAntes = free;
       entry.libreDespuesDeLlenar = Number(st2.bavail) * Number(st2.bsize);
@@ -450,24 +515,15 @@ async function main() {
       entry.motivo = c.motivo;
       entry.errores = c.errores.slice(0, 3);
       entry.originalIntacto = same(before, snapshot(dir));
-      // Nada parcial: todo archivo que haya quedado en el lote tiene el tamaño del original.
-      const partial = [];
-      (function walk(d) {
-        for (const n of fs.readdirSync(d)) {
-          const f = path.join(d, n);
-          const s = fs.lstatSync(f);
-          if (s.isDirectory()) walk(f);
-          else if (!['ESTADO.json', 'MANIFIESTO.json', 'LEEME.txt'].includes(n)) {
-            const orig = path.join(dir, path.relative(path.join(c.destino), f));
-            if (!fs.existsSync(orig) || fs.statSync(orig).size !== s.size) partial.push(f);
-          }
-        }
-      })(r.batchFolder);
+      // Nada parcial: ninguna carpeta con el nombre final, y lo que haya de «.copiando» es lo único permitido.
+      const left = (listing(destE) || []).filter((n) => !/^(System Volume Information|\$RECYCLE\.BIN)$/i.test(n));
+      entry.contenidoDelDestino = left;
+      entry.limpieza = c.limpieza || null;
+      const partial = left.filter((n) => !/\.copiando(?: \(\d+\))?$/i.test(n));
       entry.archivosParciales = partial;
-      const state = JSON.parse(fs.readFileSync(path.join(r.batchFolder, 'ESTADO.json'), 'utf8'));
-      entry.estadoJson = state.estado;
       if (!entry.originalIntacto) violation(`${tag('e')}: el original cambió con el disco lleno`);
-      if (partial.length) violation(`${tag('e')}: quedaron archivos parciales: ${JSON.stringify(partial)}`);
+      if (partial.length) violation(`${tag('e')}: quedó algo con nombre normal en el destino: ${JSON.stringify(partial)}`);
+      if (left.length) surprise(`${tag('e')}: tras el disco lleno quedó ${JSON.stringify(left)} (se esperaba el destino limpio)`);
       if (c.resultado === 'original-enviado-a-papelera' || c.resultado === 'original-borrado-definitivamente') violation(`${tag('e')}: se retiró un original con el disco lleno`);
       if (r.estado === 'completo') violation(`${tag('e')}: el disco lleno terminó como «completo»`);
       if (!r.abortada || r.abortada.code !== 'ENOSPC') surprise(`${tag('e')}: no se registró ENOSPC como causa (abortada: ${JSON.stringify(r.abortada)})`);
@@ -475,9 +531,92 @@ async function main() {
       const pf2 = await e.preflight({ sources: [dir], destinationRoot: destE, mode: 'copy', verify: 'full' });
       entry.revisionConDiscoLleno = pf2.blockers.map((b) => b.code);
       if (!pf2.blockers.some((b) => b.code === 'sin-espacio')) violation(`${tag('e')}: con el disco lleno la revisión previa no bloqueó por espacio`);
-      fs.rmSync(filler, { force: true });
+      for (const f of fillers) fs.rmSync(f, { force: true });
       return entry;
     });
+
+    // (i) archivo grande por el servicio y su hilo (lo mismo que hace la app), con tiempos y eventos
+    await step('i_archivo_grande', async () => {
+      const maxFile = fmt.name === 'FAT32' ? 3800 : BIG_MB;
+      const entry = { tamanoMB: BIG_MB, archivos: Math.max(1, Math.ceil(BIG_MB / maxFile)), casos: {} };
+      const other = path.join(work, 'origenes', fmt.name, 'Grande');
+      const filesOther = makeBig(other, BIG_MB, maxFile);
+      entry.baselineNodeMs = await nodeBaseline(filesOther, path.join(disk.root, 'base-node'));
+      fs.rmSync(long(path.join(disk.root, 'base-node')), { recursive: true, force: true });
+      const sameDiskSrc = path.join(disk.root, 'origen-grande', 'Grande');
+      const cases = [
+        ['origen-en-otra-unidad', other],
+        ['origen-en-el-mismo-disco', sameDiskSrc],
+      ];
+      for (const [label, source] of cases) {
+        if (label === 'origen-en-el-mismo-disco') makeBig(source, BIG_MB, maxFile);
+        const destBig = path.join(disk.root, `destino-grande-${label}`);
+        fs.mkdirSync(destBig, { recursive: true });
+        const diagFile = path.join(work, 'diagnostico', `${fmt.name}-${label}.log`);
+        report.diagFiles = [...(report.diagFiles || []), diagFile];
+        const svc = new TransferService({ registryDir: path.join(work, 'registros-svc', `${fmt.name}-${label}`), diagFile, progressIntervalMs: 200 });
+        const events = [];
+        svc.on('progress', (p) => events.push({ t: Date.now(), fase: p.fase, etapa: p.etapa, copiado: p.copiadoBytes, verificado: p.verificadoBytes, sinAvance: p.sinAvanceSegundos, rss: p.rssMB, bps: p.bytesPerSecond }));
+        const c = {};
+        try {
+          const pf = await svc.preflight({ sources: [source], destinationRoot: destBig, mode: 'copy', verify: 'full' });
+          c.bloqueos = pf.blockers.map((b) => b.code);
+          if (!pf.planId) {
+            violation(`${tag('i')}/${label}: el preflight bloqueó una copia de archivos grandes: ${JSON.stringify(pf.blockers)}`);
+            entry.casos[label] = c;
+            continue;
+          }
+          const t0 = Date.now();
+          const r = await svc.run(pf.planId);
+          c.totalMs = Date.now() - t0;
+          const f = r.carpetas[0];
+          c.resultado = f.resultado;
+          c.errores = f.errores.slice(0, 3);
+          const firstBytes = events.find((e) => e.copiado > 0);
+          const verifyStart = events.find((e) => e.fase === 'verificando' || e.etapa === 'verificando destino');
+          c.eventos = events.length;
+          c.primerEventoMs = events.length ? events[0].t - t0 : null;
+          c.primerosBytesMs = firstBytes ? firstBytes.t - t0 : null;
+          c.copiaMs = verifyStart ? verifyStart.t - t0 : null;
+          c.mbPorSegCopia = c.copiaMs ? Math.round((BIG_MB / (c.copiaMs / 1000)) * 10) / 10 : null;
+          c.mbPorSegTotal = Math.round((BIG_MB / (c.totalMs / 1000)) * 10) / 10;
+          c.mayorHuecoEntreEventosMs = events.reduce((m, e, i) => (i ? Math.max(m, e.t - events[i - 1].t) : m), 0);
+          c.mayorSinAvanceSeg = events.reduce((m, e) => Math.max(m, e.sinAvance || 0), 0);
+          c.memoriaMaxMB = events.reduce((m, e) => Math.max(m, e.rss || 0), 0);
+          c.etapas = [...new Set(events.map((e) => e.etapa).filter(Boolean))];
+          c.tamanoCopiado = f.destino && fs.existsSync(f.destino) ? sizeTree(f.destino) : null;
+          if (f.resultado !== 'copiada-verificada') violation(`${tag('i')}/${label}: el archivo grande no quedó verificado (${f.resultado}: ${JSON.stringify(f.errores.slice(0, 2))})`);
+          if (c.tamanoCopiado !== BIG_MB * MIB) violation(`${tag('i')}/${label}: el tamaño copiado (${c.tamanoCopiado}) no es el del origen (${BIG_MB * MIB})`);
+          if (c.mayorHuecoEntreEventosMs > 5000) surprise(`${tag('i')}/${label}: hubo ${c.mayorHuecoEntreEventosMs} ms sin ningún evento de progreso (el latido debería llegar cada ~1 s)`);
+          if (c.primerosBytesMs !== null && c.primerosBytesMs > 10000) surprise(`${tag('i')}/${label}: tardó ${c.primerosBytesMs} ms en copiar los primeros bytes`);
+          if (c.copiaMs && entry.baselineNodeMs && c.copiaMs > entry.baselineNodeMs * 3) surprise(`${tag('i')}/${label}: la copia de BoneYardDog (${c.copiaMs} ms) tardó más de 3 veces la copia simple de Node (${entry.baselineNodeMs} ms)`);
+          if (c.eventos < 3) violation(`${tag('i')}/${label}: solo ${c.eventos} eventos de progreso: la pantalla se vería detenida`);
+          fs.rmSync(long(destBig), { recursive: true, force: true });
+        } finally {
+          await svc.close();
+        }
+        entry.casos[label] = c;
+        if (label === 'origen-en-el-mismo-disco') fs.rmSync(long(path.join(disk.root, 'origen-grande')), { recursive: true, force: true });
+      }
+      return entry;
+    });
+  }
+
+  // (h) destino C:\ (la unidad del sistema): bloqueado con el mensaje nuevo (ruta + razón)
+  {
+    const e = mkEngine();
+    const sys = IS_WIN ? `${(process.env.SystemDrive || 'C:').toUpperCase()}\\` : null;
+    const tiny = path.join(work, 'origenes', 'h', 'pequena');
+    makeTree(tiny, { mb: 0 });
+    if (sys) {
+      const pf = await e.preflight({ sources: [tiny], destinationRoot: sys, mode: 'copy', verify: 'full' });
+      const b = pf.blockers.find((x) => x.code === 'destino-protegido');
+      report.volumes.sistema = { fmt: 'sistema', scenarios: { h_destino_c: { destino: sys, bloqueos: pf.blockers.map((x) => [x.code, x.message]) } } };
+      if (!b || pf.plan) violation(`sistema/h: copiar a ${sys} NO se bloqueó`);
+      else if (!b.message.includes(sys) || !/sistema|Windows|protegid/i.test(b.message)) violation(`sistema/h: el mensaje no dice la ruta y la razón: ${b.message}`);
+    } else {
+      pending('sistema/h: destino C:\\ solo se prueba en Windows');
+    }
   }
 
   report.cleanupDirs = cleanup;
@@ -499,6 +638,13 @@ function finish(code, error, cleanup = []) {
   report.finishedAt = new Date().toISOString();
   const outDir = path.join(process.cwd(), 'smoke-artifacts');
   fs.mkdirSync(outDir, { recursive: true });
+  for (const f of report.diagFiles || []) {
+    try {
+      fs.copyFileSync(f, path.join(outDir, `diagnostico-${path.basename(f)}`));
+    } catch {
+      /* sin diagnóstico en ese caso */
+    }
+  }
   fs.writeFileSync(path.join(outDir, 'discos.json'), JSON.stringify(report, null, 2));
   console.log(`[discos] ${code === 0 ? 'OK' : 'FALLÓ'}${report.pending.length ? ' (con pendientes)' : ''}`);
   for (const [fmtName, v] of Object.entries(report.volumes)) {

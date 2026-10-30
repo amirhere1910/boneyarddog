@@ -10,6 +10,7 @@
   const { activityState, PALETTE, LABELS, STATES } = window.BYDActivity;
   const { layoutFolded } = window.BYDTreemap;
   const TUI = window.BYDTransferUI;
+  const RS = window.BYDRescan;
   const $ = (id) => document.getElementById(id);
   const nf = new Intl.NumberFormat('es');
 
@@ -108,6 +109,8 @@
     $('vista-inicio').hidden = estado === 'escaneando' || estado === 'resultado';
     $('vista-escaneo').hidden = estado !== 'escaneando';
     $('vista-resultado').hidden = estado !== 'resultado';
+    $('cabecera-escaneo').hidden = estado !== 'resultado';
+    for (const t of TABS) $(`tab-${t}`).disabled = estado !== 'resultado'; // Mapa y Lista solo existen con un resultado
     if (estado !== 'resultado') {
       closeMenu(false);
       closeDetails(false);
@@ -139,8 +142,8 @@
   function onTabKey(e) {
     const i = TABS.indexOf(state.tab);
     let next = null;
-    if (e.key === 'ArrowRight') next = TABS[(i + 1) % TABS.length];
-    else if (e.key === 'ArrowLeft') next = TABS[(i + TABS.length - 1) % TABS.length];
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = TABS[(i + 1) % TABS.length];
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = TABS[(i + TABS.length - 1) % TABS.length];
     else if (e.key === 'Home') next = TABS[0];
     else if (e.key === 'End') next = TABS[TABS.length - 1];
     if (next) {
@@ -398,6 +401,7 @@
     }
     document.body.dataset.transferidas = String(state.transferred.size);
     setActionNote(`Se retiró el original de ${plural(paths.length, 'carpeta', 'carpetas')}. Los tamaños del mapa y de la lista se actualizan al volver a escanear.`);
+    updateRescan();
     refresh();
     lastRender = null;
     renderMap();
@@ -405,10 +409,10 @@
     updateBar();
   }
 
-  TUI.setHooks({ onRemoved: onOriginalsRemoved, onClosed: () => { const t = document.querySelector('#barra-seleccion:not([hidden]) #btn-sel-copiar') || $('btn-verificar-copia'); if (t) t.focus(); } });
+  TUI.setHooks({ onRemoved: onOriginalsRemoved, onClosed: () => { updateRescan(); const t = document.querySelector('#barra-seleccion:not([hidden]) #btn-sel-copiar') || $('btn-verificar-copia'); if (t) t.focus(); } });
   $('btn-sel-copiar').addEventListener('click', () => startTransfer('copy', null));
   $('btn-sel-transferir').addEventListener('click', () => startTransfer('move', null));
-  $('btn-verificar-copia').addEventListener('click', () => TUI.openVerify());
+  $('btn-verificar-copia').addEventListener('click', () => TUI.openCopies());
 
   // ---------------------------------------------------------------- selección
 
@@ -1049,6 +1053,34 @@
     $('progreso-ruta').textContent = p.currentPath;
   });
 
+  /** Estado de los botones «Volver a escanear» (la lógica está en shared/rescan.js). */
+  function rescanState() {
+    return RS.rescanView({
+      hasResult: document.body.dataset.estado === 'resultado' && Boolean(state.summary),
+      scanning: document.body.dataset.estado === 'escaneando',
+      transferring: Boolean(TUI.isBusy()),
+      transferredCount: state.transferred.size,
+      folder: state.folder,
+    });
+  }
+
+  function updateRescan() {
+    const v = rescanState();
+    for (const id of ['btn-reescanear', 'btn-reescanear-lista', 'btn-reescanear-ahora']) {
+      $(id).disabled = v.disabled;
+      $(id).title = v.disabled ? v.reason : 'Vuelve a leer la misma carpeta o unidad (F5)';
+    }
+    $('aviso-desactualizado').hidden = !v.stale;
+    $('aviso-desactualizado-texto').textContent = v.staleText;
+  }
+
+  /** Vuelve a leer lo mismo que ya se escaneó (la carpeta la recuerda el proceso principal; aquí no viaja ninguna ruta). */
+  async function rescan() {
+    if (rescanState().disabled) return;
+    await scan({ path: state.folder });
+    updateRescan();
+  }
+
   async function scan(chosen) {
     showMessage('');
     setActionNote('');
@@ -1076,8 +1108,10 @@
       return;
     }
     state.summary = summary;
+    document.body.dataset.escaneos = String(Number(document.body.dataset.escaneos || '0') + 1); // contador (lo lee la prueba automática)
     state.selection.clear(); // la selección es de UN escaneo
     state.transferred.clear();
+    document.body.dataset.transferidas = '0';
     state.map = { path: null, data: null, token: state.map.token + 1 };
     $('res-carpeta').textContent = state.folder;
     $('res-atime').textContent = summary.atimeReliability.message;
@@ -1127,6 +1161,21 @@
   $('btn-cancelar').addEventListener('click', async () => {
     $('btn-cancelar').disabled = true;
     await byd.cancelScan();
+  });
+  for (const id of ['btn-reescanear', 'btn-reescanear-lista', 'btn-reescanear-ahora']) $(id).addEventListener('click', rescan);
+  document.addEventListener('keydown', (e) => {
+    const tag = e.target && e.target.tagName;
+    const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+    if (!RS.shouldHandleKey(e, rescanState(), typing)) return;
+    e.preventDefault();
+    rescan();
+  });
+  new MutationObserver(updateRescan).observe(document.body, { attributes: true, attributeFilter: ['data-estado', 'data-transferidas'] });
+  $('nav-ayuda').addEventListener('click', () => {
+    const d = $('ayuda-pruebas');
+    d.open = true;
+    d.scrollIntoView({ block: 'start' });
+    d.querySelector('summary').focus();
   });
   $('btn-nuevo').addEventListener('click', async () => {
     showMessage('');

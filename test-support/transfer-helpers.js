@@ -8,6 +8,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { createTransferEngine } = require('../src/core/transfer');
 const { isProtectedPath } = require('../src/core/protected');
+const { createRegistry } = require('../src/core/registro');
 
 const TMP_BASE = path.join(__dirname, '..', '.test-tmp');
 const DAY = 24 * 60 * 60 * 1000;
@@ -104,6 +105,7 @@ function spyFs({ before, after, wrapHandle } = {}) {
 /** Motor de pruebas: volumen NTFS fijo y Papelera falsa que quita de verdad. */
 function makeEngine(base, overrides = {}) {
   const trashed = [];
+  const registry = createRegistry({ dir: path.join(base, 'registros') });
   const engine = createTransferEngine({
     volumeInfo: async () => ({ ...NTFS_FIXED }),
     trash: async (p) => {
@@ -112,9 +114,10 @@ function makeEngine(base, overrides = {}) {
     },
     now: () => new Date(2026, 9, 27, 14, 5).getTime(),
     appVersion: '0.0.0-prueba',
+    registry,
     ...overrides,
   });
-  return { engine, trashed };
+  return { engine, trashed, registry };
 }
 
 function makeDest(base) {

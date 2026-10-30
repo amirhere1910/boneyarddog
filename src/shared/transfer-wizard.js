@@ -76,7 +76,7 @@
     [/\bEACCES\b|\bEPERM\b|permission denied|operation not permitted|access is denied|acceso denegado/i, 'Windows no dio permiso para hacer eso. El archivo puede estar protegido o en uso.'],
     [/\bEBUSY\b|resource busy|being used by another|en uso|\bETXTBSY\b/i, 'El archivo o la carpeta está en uso por otro programa. Ciérralo y vuelve a intentarlo.'],
     [/\bENOENT\b|no such file|cannot find|no se encuentra|not found/i, 'No se encontró el archivo o la carpeta (¿se movió o se borró mientras tanto?).'],
-    [/\bEIO\b|\bENODEV\b|\bENXIO\b|\bENOTCONN\b|\bESHUTDOWN\b|input\/output|i\/o error|\bE\/S\b|device not|se desconect/i, 'El disco dejó de responder (¿se desconectó?). Vuelve a conectarlo y verifica la copia.'],
+    [/\bEIO\b|\bENODEV\b|\bENXIO\b|\bENOTCONN\b|\bESHUTDOWN\b|input\/output|i\/o error|\bE\/S\b|device not|se desconect/i, 'El disco se desconectó o dejó de responder. Los originales no se tocaron. Vuelve a conectarlo y revisa si quedó una carpeta «….copiando» para borrarla.'],
     [/\bEROFS\b|read-only|solo lectura/i, 'El disco es de solo lectura: no se puede escribir en él.'],
     [/\bEEXIST\b|already exists|ya exist/i, 'Ya existe algo con ese nombre en el destino. BoneYardDog nunca sobrescribe.'],
     [/\bENAMETOOLONG\b|name too long|path too long|ruta.*larga/i, 'La ruta es demasiado larga para Windows.'],
@@ -235,7 +235,8 @@
   // ----------------------------------------------------------- progreso
 
   const PHASES = {
-    planificando: 'Planificando',
+    preparando: 'Preparando',
+    planificando: 'Preparando',
     copiando: 'Copiando',
     verificando: 'Verificando',
     'retirando original': 'Retirando el original',
@@ -269,6 +270,10 @@
       phase: phaseLabel(e.fase),
       percent: progressPercent(e, verify),
       bytesText: `${formatBytes(e.overallBytesDone)} de ${formatBytes(e.totalBytes)}`,
+      // Textos separados (mismas unidades en todos: 1 GB = 1024 MB, como en el Explorador de Windows).
+      copiedText: `Copiado ${formatBytes(e.copiadoBytes || 0)} de ${formatBytes(e.totalBytes)}`,
+      verifiedText: Number.isFinite(e.totalVerificarBytes) && e.totalVerificarBytes > 0 ? `Verificado ${formatBytes(e.verificadoBytes || 0)} de ${formatBytes(e.totalVerificarBytes)}` : 'Verificación rápida (tamaño y fecha)',
+      stageText: e.etapa ? `Etapa: ${e.etapa}` : '',
       filesText: `${nf(e.overallFilesDone || 0)} de ${nf(e.totalFiles || 0)} archivos`,
       currentFile: file.shown,
       currentFileFull: file.full,
@@ -296,7 +301,7 @@
       case 'con-errores':
         return { icon: '✖', tone: 'error', label: 'Con errores', detail: motivo || 'No se pudo copiar o verificar todo. El original no se tocó.' };
       case 'cancelada':
-        return { icon: '⏹', tone: 'aviso', label: 'Cancelada', detail: 'El original no se tocó. Puede haber una copia incompleta: puedes quitarla.' };
+        return { icon: '⏹', tone: 'aviso', label: 'Cancelada', detail: motivo || 'Cancelada. Los originales no se tocaron.' };
       default:
         return { icon: '?', tone: 'aviso', label: 'Estado desconocido', detail: motivo };
     }
@@ -342,8 +347,12 @@
     const bad = countBy(result, (c) => c.resultado === 'con-errores' || c.resultado === 'borrado-parcial');
     const cancelled = result.estado === 'cancelado' || countBy(result, (c) => c.resultado === 'cancelada') === total;
     const verified = countBy(result, (c) => c.verificada === true);
+    if (result.forzada) return { tone: 'error', text: result.aviso || 'Cancelada a la fuerza porque el disco no respondía. Los originales no se tocaron.' };
     if (result.abortada) return { tone: 'error', text: `La operación se detuvo: ${translateError(result.abortada.message || result.abortada.code)}` };
-    if (cancelled) return { tone: 'aviso', text: 'Operación cancelada. Los originales no se tocaron.' };
+    if (cancelled) {
+      const left = result.carpetas.flatMap((c) => (c.limpieza && !c.limpieza.limpia ? c.limpieza.pendientes : []));
+      return { tone: 'aviso', text: left.length ? `Cancelada. Los originales no se tocaron, pero quedó una copia incompleta que no se pudo quitar: ${left.join('; ')}. Bórrala tú.` : 'Cancelada. Se quitó la copia incompleta. Los originales no se tocaron.' };
+    }
     if (bad > 0) return { tone: 'error', text: `Terminó con problemas en ${plural(bad, 'carpeta', 'carpetas')} de ${nf(total)}. Revisa el detalle.` };
     if (verified === total) return { tone: 'ok', text: `Listo: ${plural(total, 'carpeta copiada y verificada', 'carpetas copiadas y verificadas')}.` };
     return { tone: 'aviso', text: `Terminó, pero solo ${nf(verified)} de ${plural(total, 'carpeta', 'carpetas')} quedó verificada.` };
@@ -370,22 +379,32 @@
     return { folders: indices.length, bytes };
   }
 
+  /** Carpeta que «Abrir la copia en el Explorador» muestra: la primera copia terminada (o la provisional que quedó). */
+  function revealTarget(result) {
+    const list = result && Array.isArray(result.carpetas) ? result.carpetas : [];
+    const done = list.find((c) => c.verificada === true && typeof c.destino === 'string');
+    if (done) return done.destino;
+    const left = list.find((c) => c.limpieza && !c.limpieza.limpia && c.limpieza.pendientes && c.limpieza.pendientes[0]);
+    return left ? left.limpieza.pendientes[0] : null;
+  }
+
   /**
    * Qué botones se muestran en el resultado.
-   *  · abrir/verificar: si hay carpeta de lote y algo se copió;
-   *  · quitar la copia: SOLO si ningún original se retiró (si no, la copia es lo único que queda);
+   *  · abrir: si hay una copia terminada (o una provisional que quedó);
+   *  · verificar de nuevo: si alguna copia tiene registro;
+   *  · quitar la copia: SOLO tras una copia COMPLETA (copiar), nunca tras cancelar (la app ya limpió sola) y nunca si algún
+   *    original se retiró (la copia es lo único que queda);
    *  · borrar definitivamente: SOLO si la Papelera falló en alguna carpeta.
    */
   function resultButtons(result) {
     if (!result || !Array.isArray(result.carpetas)) {
       return { openCopy: false, verifyAgain: false, removeCopy: false, deleteAfterRecycleFail: false, needsRescan: false };
     }
-    const hasBatch = typeof result.batchFolder === 'string' && result.batchFolder !== '';
-    const anyCopied = countBy(result, (c) => c.verificada === true || c.resultado === 'con-errores' || c.resultado === 'cancelada') > 0;
+    const list = result.carpetas;
     return {
-      openCopy: hasBatch,
-      verifyAgain: hasBatch && countBy(result, (c) => c.verificada === true) > 0,
-      removeCopy: hasBatch && anyCopied && !anyOriginalGone(result),
+      openCopy: revealTarget(result) !== null,
+      verifyAgain: list.some((c) => c.verificada === true && typeof c.registroId === 'string'),
+      removeCopy: result.estado !== 'cancelado' && !anyOriginalGone(result) && list.some((c) => c.verificada === true && c.resultado === 'copiada-verificada'),
       deleteAfterRecycleFail: deletableIndices(result).length > 0,
       needsRescan: anyOriginalGone(result),
     };
@@ -412,29 +431,148 @@
     sobrante: 'sobra: no estaba en la copia original',
     'no-es-archivo': 'ya no es un archivo',
     'ruta-no-valida': 'ruta no válida en el manifiesto',
-    'sin-huella-en-el-manifiesto': 'el manifiesto no trae huella (se comparó solo tamaño)',
+    'sin-huella-en-el-manifiesto': 'el registro no trae huella (se comparó solo tamaño)',
+    'sin-huella-en-el-registro': 'el registro no trae huella (se comparó solo tamaño)',
+    ilegible: 'no se pudo leer',
   };
+
+  /** Texto en llano de un problema de verificación. */
+  function problemText(p) {
+    return PROBLEM_TEXT[p.problema] || translateError(String(p.problema).replace(/^error-/, ''));
+  }
 
   function verifyView(res) {
     if (!res || typeof res !== 'object') return null;
+    const name = res.nombre ? `«${res.nombre}»: ` : '';
+    if (res.estado === 'no-disponible') return { ok: false, estado: res.estado, tone: 'aviso', headline: `${name}${res.motivo || 'No encuentro esa carpeta.'}`, counts: {}, lines: [], hidden: 0 };
+    if (res.estado === 'distinta') return { ok: false, estado: res.estado, tone: 'error', headline: `${name}${res.motivo || 'Esa carpeta ya no es la que se copió.'}`, counts: {}, lines: [], hidden: 0 };
+    if (res.estado === 'sin-archivos' || (res.estado === undefined && res.verificados === 0 && res.ok !== false)) {
+      return { ok: false, estado: 'sin-archivos', tone: 'aviso', headline: `${name}No había archivos que comprobar.`, counts: {}, lines: [], hidden: 0 };
+    }
     const problems = (Array.isArray(res.problemas) ? res.problemas : []).filter((p) => !p.aviso);
     const counts = {};
     for (const p of problems) counts[p.problema] = (counts[p.problema] || 0) + 1;
     const lines = problems.slice(0, 50).map((p) => ({ ruta: p.ruta, texto: PROBLEM_TEXT[p.problema] || translateError(String(p.problema).replace(/^error-/, '')) }));
-    if (res.ok) {
-      return { ok: true, tone: 'ok', headline: `La copia está bien: ${plural(res.verificados, 'archivo verificado', 'archivos verificados')} (${res.modo === 'quick' ? 'solo tamaño y fecha' : 'contenido comparado'}).`, counts, lines, hidden: 0 };
+    const good = res.estado === 'ok' || (res.estado === undefined && res.ok === true);
+    if (good && problems.length === 0) {
+      return { ok: true, estado: 'ok', tone: 'ok', headline: `${name}La copia está bien: ${plural(res.verificados, 'archivo verificado', 'archivos verificados')} (${res.modo === 'quick' ? 'solo tamaño y fecha' : 'contenido comparado'}).`, counts, lines, hidden: 0 };
     }
     return {
       ok: false,
+      estado: 'problemas',
       tone: 'error',
-      headline: `La copia tiene ${plural(problems.length, 'problema', 'problemas')}.`,
+      headline: `${name}La copia tiene ${plural(problems.length, 'problema', 'problemas')}.`,
       counts,
       lines,
       hidden: Math.max(0, problems.length - lines.length),
     };
   }
 
+  // ------------------------------------------------------- estado del asistente (todo lo que se ve sale de aquí)
+
+  const IDLE_NOTICE = 'Si cancelas, los originales no se tocan.';
+  const CANCEL_NOTICE = 'Cancelando… Los originales no se tocan.';
+  const STALL_SECONDS = 15;
+
+  /**
+   * Estado NUEVO del asistente. Se crea cada vez que se abre el diálogo: NADA sobrevive de una operación anterior (ni el
+   * aviso de «Cancelando…», ni botones deshabilitados, ni la barra, ni el resultado, ni las elecciones, ni las
+   * confirmaciones de borrado, ni los mensajes de error).
+   * @param {'transfer'|'copies'} kind
+   * @param {'copy'|'move'} mode
+   * @param {Array<{path: string, name: string}>} items
+   */
+  function newWizard(kind = 'transfer', mode = 'copy', items = []) {
+    return {
+      kind,
+      mode,
+      verify: 'full',
+      items: items.slice(0, MAX_SOURCES),
+      step: kind === 'copies' ? 'copias' : 'destino',
+      destination: null,
+      review: null,
+      recycleChoice: null,
+      understood: false,
+      phase: 'idle', // idle | running | cancelling
+      progress: null,
+      error: '',
+      result: null,
+      runId: null,
+      resultConfirm: false, // la casilla «Entiendo…» de la pantalla de resultado
+      removeConfirmOpen: false,
+    };
+  }
+
+  /**
+   * Cambios de estado. Pura: devuelve un estado nuevo. Al EMPEZAR una operación se reinicia todo lo que es de una operación
+   * (progreso, «Cancelando…», error, resultado, confirmación de borrado de resultado): una operación nueva parte de cero.
+   */
+  function reduce(state, action) {
+    switch (action && action.type) {
+      case 'set-destination':
+        return { ...state, destination: action.destination, review: null, recycleChoice: null, understood: false, error: '' };
+      case 'set-verify':
+        return { ...state, verify: action.verify };
+      case 'step':
+        return { ...state, step: action.step };
+      case 'review':
+        return { ...state, review: action.review };
+      case 'recycle-choice':
+        return { ...state, recycleChoice: action.choice, understood: action.choice === 'borrar' ? state.understood : false };
+      case 'understood':
+        return { ...state, understood: action.value === true };
+      case 'start-operation':
+        return { ...state, phase: 'running', progress: null, error: '', result: null, runId: null, resultConfirm: false, removeConfirmOpen: false, step: 'progreso' };
+      case 'progress':
+        return state.phase === 'running' || state.phase === 'cancelling' ? { ...state, progress: { ...action.event, receivedAt: action.now || 0 } } : state;
+      case 'cancel':
+        return state.phase === 'running' ? { ...state, phase: 'cancelling' } : state;
+      case 'finished':
+        // La operación terminó: no queda ninguna elección ni confirmación que pueda valer para la siguiente.
+        return { ...state, phase: 'idle', result: action.result, runId: action.result ? action.result.runId : null, step: 'resultado', recycleChoice: null, understood: false, resultConfirm: false };
+      case 'failed':
+        return { ...state, phase: 'idle', error: action.error || '', step: action.step || state.step };
+      case 'result-confirm':
+        return { ...state, resultConfirm: action.value === true };
+      case 'error':
+        return { ...state, error: action.text || '' };
+      default:
+        return state;
+    }
+  }
+
+  /**
+   * Lo que se muestra, calculado del estado. `now` (ms) sirve para el aviso de «tardando».
+   * El aviso de «Cancelando…» SOLO sale si el estado está cancelando.
+   */
+  function wizardView(state, now = 0) {
+    const cancelling = state.phase === 'cancelling';
+    const running = state.phase === 'running' || cancelling;
+    const prog = progressView(state.progress, state.mode === 'move' ? 'full' : state.verify);
+    const stalled = running && state.progress && Number.isFinite(state.progress.sinAvanceSegundos) && state.progress.sinAvanceSegundos >= STALL_SECONDS;
+    return {
+      title: state.kind === 'copies' ? 'Copias anteriores' : state.mode === 'move' ? 'Transferir a otro disco (mover)' : 'Copiar a otro disco',
+      notice: cancelling ? CANCEL_NOTICE : IDLE_NOTICE,
+      cancelDisabled: cancelling,
+      cancelVisible: running,
+      progress: state.progress ? prog : progressView(null, state.verify),
+      stalledNotice: stalled ? `El disco o el antivirus está tardando… (etapa: ${state.progress.etapa || state.progress.fase || 'trabajando'}, hace ${Math.floor(state.progress.sinAvanceSegundos)} s)` : '',
+      errorText: state.error,
+      showResult: state.step === 'resultado' && Boolean(state.result),
+      resultConfirm: state.resultConfirm,
+      recycleChoice: state.recycleChoice,
+      understood: state.understood,
+      now,
+    };
+  }
+
   return {
+    newWizard,
+    reduce,
+    wizardView,
+    STALL_SECONDS,
+    CANCEL_NOTICE,
+    IDLE_NOTICE,
     MAX_SOURCES,
     STEPS,
     ORIGINAL_GONE,
@@ -466,7 +604,9 @@
     deletableIndices,
     deleteTotals,
     resultButtons,
+    revealTarget,
     removedSources,
     verifyView,
+    problemText,
   };
 });

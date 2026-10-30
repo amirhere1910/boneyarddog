@@ -1,6 +1,6 @@
 {
   "name": "boneyarddog",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Analizador de discos para Windows: encuentra carpetas grandes sin uso y las copia o transfiere a otro disco con verificación.",
   "license": "MIT",
   "private": true,

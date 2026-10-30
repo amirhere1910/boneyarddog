@@ -8,18 +8,48 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body data-estado="inicio">
+  <div class="app">
+  <aside class="lateral" aria-label="Navegación">
+    <div class="marca">
+      <img src="../../assets/logo.svg" alt="" width="36" height="36">
+      <span class="marca-nombre">BoneYardDog</span>
+    </div>
+    <nav class="lateral-nav" aria-label="Secciones">
+      <div class="pestanas" role="tablist" aria-label="Vistas" aria-orientation="vertical">
+        <button id="tab-mapa" type="button" role="tab" aria-selected="true" aria-controls="panel-mapa" tabindex="0"><svg class="icono" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="10" rx="1.5"/><rect x="13" y="3" width="8" height="6" rx="1.5"/><rect x="13" y="11" width="8" height="10" rx="1.5"/><rect x="3" y="15" width="8" height="6" rx="1.5"/></svg><span class="nav-texto">Mapa</span></button>
+        <button id="tab-lista" type="button" role="tab" aria-selected="false" aria-controls="panel-lista" tabindex="-1"><svg class="icono" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg><span class="nav-texto">Lista de candidatas</span></button>
+      </div>
+      <button id="btn-verificar-copia" type="button" class="nav-boton"><svg class="icono" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg><span class="nav-texto">Copias anteriores</span></button>
+      <button id="nav-ayuda" type="button" class="nav-boton"><svg class="icono" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7"/><path d="M12 17h.01"/></svg><span class="nav-texto">Ayuda y pruebas</span></button>
+    </nav>
+    <p id="lateral-version" class="lateral-version"></p>
+  </aside>
+
+  <div class="contenido">
   <header class="cabecera">
-    <img src="../../assets/logo.svg" alt="" width="56" height="56">
-    <div>
+    <div class="cabecera-titulo">
       <h1>BoneYardDog</h1>
       <p class="subtitulo">Encuentra carpetas grandes que llevan tiempo sin usarse.</p>
     </div>
-    <button id="btn-verificar-copia" type="button" class="secundario cabecera-boton">Verificar una copia anterior…</button>
+    <div id="cabecera-escaneo" class="cabecera-escaneo" hidden>
+      <p id="res-carpeta" class="ruta cabecera-ruta"></p>
+      <div class="fila fila-envuelve">
+        <button id="btn-reescanear" type="button" class="secundario" title="Vuelve a leer la misma carpeta o unidad (F5)"><svg class="icono" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg>Volver a escanear</button>
+        <button id="btn-nuevo" type="button" class="secundario">Elegir otra unidad o carpeta</button>
+      </div>
+    </div>
   </header>
 
   <p class="aviso" role="note">Prueba primero con datos de prueba, nunca con datos que no tengas respaldados.</p>
 
   <p id="mensaje" class="mensaje" role="alert" hidden></p>
+
+  <!-- Copias incompletas que quedaron de una sesión anterior (cierre forzado, corte, desconexión) -->
+  <section id="aviso-pendientes" class="panel caja caja-aviso" aria-labelledby="t-pendientes" hidden>
+    <h2 id="t-pendientes">Quedó una copia incompleta</h2>
+    <p>BoneYardDog dejó a medias una copia en una sesión anterior. Está marcada con «.copiando» para que no se confunda con una copia buena. Puedes borrarla (solo borra esa carpeta provisional; tus originales no se tocan).</p>
+    <ul id="lista-pendientes" class="lista"></ul>
+  </section>
 
   <!-- 1. Inicio -->
   <section id="vista-inicio" class="panel" aria-labelledby="t-inicio">
@@ -58,6 +88,12 @@
           <button id="td-borrar-no" type="button" class="secundario">No</button>
         </div>
       </div>
+      <h2 id="t-diag">Registro de diagnóstico</h2>
+      <p>Si una copia se queda esperando, el registro dice en qué etapa y cuánto tardó cada paso (abrir el archivo, primera lectura, escritura). <strong>Incluye rutas de tus carpetas y archivos</strong>, pero nunca su contenido. Revísalo antes de compartirlo.</p>
+      <div class="fila fila-envuelve">
+        <button id="diag-guardar" type="button" class="secundario">Guardar registro de diagnóstico…</button>
+      </div>
+      <p id="diag-estado" class="nota" role="status"></p>
     </div>
   </details>
 
@@ -74,7 +110,6 @@
   <div id="vista-resultado" hidden>
     <section class="panel" aria-label="Resultado del análisis">
       <div class="fila fila-entre fila-superior">
-        <p id="res-carpeta" class="ruta"></p>
         <div class="controles">
           <div class="campo">
             <label for="sel-periodo">Sin uso desde hace</label>
@@ -101,13 +136,11 @@
           </div>
           <p id="calculando" class="calculando" role="status" hidden>Calculando…</p>
         </div>
-        <button id="btn-nuevo" type="button" class="secundario">Revisar otra unidad o carpeta</button>
       </div>
       <p id="estado-accion" class="nota" role="status"></p>
-
-      <div class="pestanas" role="tablist" aria-label="Vistas">
-        <button id="tab-mapa" type="button" role="tab" aria-selected="true" aria-controls="panel-mapa" tabindex="0">Mapa</button>
-        <button id="tab-lista" type="button" role="tab" aria-selected="false" aria-controls="panel-lista" tabindex="-1">Lista de candidatas</button>
+      <div id="aviso-desactualizado" class="caja caja-aviso" role="status" hidden>
+        <p id="aviso-desactualizado-texto"></p>
+        <button id="btn-reescanear-ahora" type="button">Volver a escanear ahora</button>
       </div>
 
       <!-- Pestaña Mapa -->
@@ -157,6 +190,7 @@
       <!-- Pestaña Lista -->
       <div id="panel-lista" role="tabpanel" aria-labelledby="tab-lista" hidden>
         <h2 id="res-titulo" tabindex="-1">–</h2>
+        <div class="fila"><button id="btn-reescanear-lista" type="button" class="secundario">Volver a escanear</button></div>
         <div class="controles">
           <div class="campo">
             <label for="sel-minimo">Tamaño mínimo</label>
@@ -218,6 +252,9 @@
   </div>
 
   <footer class="pie-app"><span id="app-version">BoneYardDog</span> · <span id="app-proyecto"></span></footer>
+  </div><!-- /contenido -->
+  </div><!-- /app -->
+
 
   <!-- Asistente de copiar y transferir (diálogo propio, no window.confirm) -->
   <dialog id="dlg-transferir" class="dialogo" aria-labelledby="dlg-titulo">
@@ -238,6 +275,7 @@
           <div id="dlg-unidades" class="unidades-lista" role="radiogroup" aria-label="Unidades de destino"></div>
           <div class="fila"><button id="dlg-otra-carpeta" type="button" class="secundario">Elegir otra carpeta…</button></div>
           <p id="dlg-destino-elegido" class="destino-elegido" role="status">Todavía no elegiste un destino.</p>
+          <p id="dlg-se-guardara" class="se-guardara" role="status"></p>
           <p id="dlg-nota-formato" class="nota" hidden></p>
         </fieldset>
         <fieldset class="grupo" id="dlg-verificacion">
@@ -278,13 +316,16 @@
         <div id="prog-barra" class="barra barra-real" role="progressbar" aria-label="Progreso total" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="prog-relleno" class="barra-relleno"></div></div>
         <p id="prog-porcentaje" class="nota"></p>
         <dl class="cifras cifras-prog">
-          <div><dt>Bytes</dt><dd id="prog-bytes">–</dd></div>
+          <div><dt>Copiado</dt><dd id="prog-bytes">–</dd></div>
+          <div><dt>Verificado</dt><dd id="prog-verificado">–</dd></div>
           <div><dt>Archivos</dt><dd id="prog-archivos">–</dd></div>
           <div><dt>Velocidad</dt><dd id="prog-velocidad">–</dd></div>
           <div><dt>Tiempo restante</dt><dd id="prog-eta">–</dd></div>
         </dl>
         <p class="nota">Archivo actual:</p>
+        <p id="prog-etapa" class="nota" role="status"></p>
         <p id="prog-archivo" class="ruta ruta-actual"></p>
+        <p id="prog-tardando" class="caja caja-aviso prog-tardando" role="status" hidden></p>
         <p id="prog-aviso" class="nota">Si cancelas, los originales no se tocan.</p>
       </section>
 
@@ -321,19 +362,20 @@
         </div>
       </section>
 
-      <!-- Verificar una copia anterior -->
-      <section id="paso-verificar" aria-label="Verificar una copia anterior" hidden>
-        <p>Elige la carpeta de una copia que hizo BoneYardDog (la que tiene la fecha, dentro de «BoneYardDog», y contiene <code>MANIFIESTO.json</code>). Conviene hacerlo después de expulsar y volver a conectar el disco.</p>
-        <div class="fila"><button id="ver-elegir" type="button" class="secundario">Elegir la carpeta de la copia…</button></div>
-        <p id="ver-elegida" class="destino-elegido" role="status">Todavía no elegiste ninguna copia.</p>
-        <label class="check"><input type="checkbox" id="ver-rapida"> Solo tamaño y fecha (rápida; no comprueba el contenido)</label>
-        <div id="ver-progreso" hidden>
-          <div class="barra barra-real" role="progressbar" aria-label="Progreso de la verificación" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="ver-relleno" class="barra-relleno"></div></div>
-          <p id="ver-progreso-texto" class="nota" role="status"></p>
+      <!-- Copias anteriores (el registro vive en este PC, no en el disco de destino) -->
+      <section id="paso-copias" aria-label="Copias anteriores" hidden>
+        <p>Estas son las copias que hizo BoneYardDog en este equipo. «Verificar» vuelve a comparar cada archivo de la copia con lo que se guardó al copiarla.</p>
+        <p id="cop-usb" class="nota">Los discos USB pueden servir la verificación desde memoria: expulsa y vuelve a conectar el disco antes de verificar.</p>
+        <p id="cop-vacio" class="vacio" hidden>Todavía no hay copias registradas. Cuando copies o transfieras una carpeta, aparecerá aquí.</p>
+        <ul id="cop-lista" class="cop-lista" aria-label="Copias anteriores"></ul>
+        <div id="cop-progreso" hidden>
+          <div class="barra barra-real" role="progressbar" aria-label="Progreso de la verificación" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="cop-relleno" class="barra-relleno"></div></div>
+          <p id="cop-progreso-texto" class="nota" role="status"></p>
         </div>
-        <div id="ver-resultado" class="caja" role="status" hidden>
-          <h3 id="ver-titular" tabindex="-1"></h3>
-          <ul id="ver-lista"></ul>
+        <div id="cop-resultado" class="caja" role="status" hidden>
+          <h3 id="cop-titular" tabindex="-1"></h3>
+          <ul id="cop-problemas"></ul>
+          <div class="fila"><button id="cop-ver-todos" type="button" class="secundario" hidden>Ver todos</button></div>
         </div>
       </section>
     </div>
@@ -346,7 +388,6 @@
         <button id="dlg-siguiente" type="button">Siguiente</button>
         <button id="dlg-empezar" type="button">Empezar</button>
         <button id="dlg-cancelar-op" type="button" class="secundario">Cancelar la operación</button>
-        <button id="dlg-verificar-ya" type="button">Verificar</button>
         <button id="dlg-cerrar" type="button">Cerrar</button>
       </div>
     </div>
@@ -354,9 +395,11 @@
 
   <script src="../shared/activity.js"></script>
   <script src="../shared/treemap.js"></script>
+  <script src="../shared/rescan.js"></script>
   <script src="../shared/transfer-wizard.js"></script>
   <script src="transfer-ui.js"></script>
   <script src="app.js"></script>
   <script src="datos-prueba-ui.js"></script>
+  <script src="pendientes-ui.js"></script>
 </body>
 </html>

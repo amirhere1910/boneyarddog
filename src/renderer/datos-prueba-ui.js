@@ -132,6 +132,14 @@
     show('td-borrar-confirmar', false);
     $('td-borrar').focus();
   });
+  $('diag-guardar').addEventListener('click', async () => {
+    $('diag-guardar').disabled = true;
+    $('diag-estado').textContent = '';
+    const r = await byd.diagSave();
+    $('diag-guardar').disabled = false;
+    if (!r.ok) $('diag-estado').textContent = 'No se pudo guardar el registro de diagnóstico.';
+    else $('diag-estado').textContent = r.value.guardado ? 'Registro guardado. Recuerda que incluye rutas de tus carpetas.' : 'No se guardó nada.';
+  });
   $('ayuda-pruebas').addEventListener('toggle', () => {
     if ($('ayuda-pruebas').open) refreshStatus();
   });
@@ -140,6 +148,7 @@
     const info = await byd.getAppInfo();
     if (info.ok) {
       $('app-version').textContent = `BoneYardDog versión ${info.value.version}`;
+      $('lateral-version').textContent = `Versión ${info.value.version}`;
       $('app-proyecto').textContent = `Proyecto: ${info.value.project}`;
       document.body.dataset.version = info.value.version;
     }

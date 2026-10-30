@@ -185,16 +185,16 @@ test('destino: solo rutas absolutas y locales (nada de red, relativas, con \\0 n
 });
 
 test('verificar una copia anterior: solo { mode } con full o quick', () => {
-  assert.deepEqual(V.validateVerifyBatchOptions(undefined), { mode: 'full' });
-  assert.deepEqual(V.validateVerifyBatchOptions({}), { mode: 'full' });
-  assert.deepEqual(V.validateVerifyBatchOptions({ mode: 'quick' }), { mode: 'quick' });
+  assert.deepEqual(V.validateVerifyOptions(undefined), { mode: 'full' });
+  assert.deepEqual(V.validateVerifyOptions({}), { mode: 'full' });
+  assert.deepEqual(V.validateVerifyOptions({ mode: 'quick' }), { mode: 'quick' });
   for (const mal of [null, 'full', [], { mode: 'rapida' }, { mode: 1 }, { path: 'C:\\x' }, { mode: 'full', batchFolder: 'C:\\x' }]) {
-    assert.throws(() => V.validateVerifyBatchOptions(mal), V.ValidationError, JSON.stringify(mal));
+    assert.throws(() => V.validateVerifyOptions(mal), V.ValidationError, JSON.stringify(mal));
   }
 });
 
 test('los canales nuevos existen y tienen el prefijo y formato esperados', () => {
-  for (const name of ['chooseDestination', 'chooseDestinationDrive', 'listDestinationDrives', 'transferPreflight', 'transferRun', 'transferCancel', 'transferProgress', 'transferDeleteFromResult', 'transferRemoveCopy', 'verifyBatchChooseFolder', 'verifyBatchRun']) {
+  for (const name of ['chooseDestination', 'chooseDestinationDrive', 'listDestinationDrives', 'transferPreflight', 'transferRun', 'transferCancel', 'transferProgress', 'transferDeleteFromResult', 'transferRemoveCopy', 'copiesList', 'copiesVerify']) {
     assert.match(V.CHANNELS[name], /^byd:[a-z-]+$/, name);
   }
   assert.equal(new Set(Object.values(V.CHANNELS)).size, Object.keys(V.CHANNELS).length, 'sin canales repetidos');

@@ -33,7 +33,7 @@ Decisiones técnicas:
 - **El original solo se elimina** con la Papelera (inyectada; `shell.trashItem` en el proceso principal) o con el borrado definitivo, y en ambos casos solo tras verificación completa y sin cambios en el origen. Una prueba revisa el código fuente y otras espían el sistema de archivos.
 - **Rutas reales** (`realpath`): las protecciones y los «dentro de» se deciden con la ruta real, no solo con el texto (hallazgo de la revisión de la 3A).
 - **La interfaz nunca manda un destino**: el destino sale del diálogo del sistema o de una unidad que detecta el proceso principal, que lo guarda; los orígenes los confirma el análisis uno por uno (máximo 500).
-- **Nunca sobrescribe**; cada lote tiene carpeta propia (`BoneYardDog\<fecha>\<unidad>\<ruta original>`) con `ESTADO.json`, `MANIFIESTO.json` y `LEEME.txt`.
+- **Nunca sobrescribe**; la copia es simple: `<destino>\<nombre de la carpeta>` (si ese nombre existe, `nombre (2)`), sin archivos extra. Mientras se copia vive en `<nombre>.copiando` y solo se renombra al final, cuando está verificada. El registro para «Copias anteriores» vive en el PC (`registros`), no en el destino. La raíz de una unidad (`E:\`) es un destino válido; solo se bloquea la de la unidad de Windows.
 - **Lo que no se copia impide retirar el original**: enlaces, elementos ilegibles o especiales.
 - **Una sola excepción a «sin `child_process`»**: `src/main/volume-info.js` (tipo y formato de la unidad por PowerShell, `execFile`, sin shell, 8 s, salida validada).
 - **Pruebas de mutación** (`node scripts/mutaciones-transferencia.js`): se rompe el motor a propósito y se comprueba que alguna prueba falle.
@@ -113,6 +113,7 @@ Todo el cálculo (celdas, detalles, selección) lo hace el servicio en su hilo; 
 | 2C | Mapa visual de cuadros por tamaño con color por actividad, pestañas, menú contextual, detalles y selección con espacio total | **Terminada** |
 | 3A | **Motor** de copia y transferencia (sin pantallas): revisión previa, copia con huella SHA-256, verificación, retirada del original y `verifyBatch`; más el pulido del mapa | **Terminada** |
 | 3B | Pantallas (asistente de 3 pasos, resultado, «Verificar una copia anterior»), «Copiar…» y «Transferir…» activos, canales IPC validados, rutas reales, sin cuarentena y con borrado definitivo confirmado | **Terminada** |
+| 5 | **Copia simple** (sin estructura de fechas ni archivos extra), raíz de unidad como destino, **cuelgues con archivos grandes** (latido, etapa, perro guardián, diagnóstico), «Copias anteriores» con registro en el PC, **«Volver a escanear»** y **diseño nuevo** (barra lateral, tarjetas) | **Terminada** (pendiente de probar a mano con USB físico) |
 | 4 | Instalador para Windows (y portátil), datos de prueba dentro de la app y discos virtuales NTFS/exFAT/FAT32 en CI | **Terminada** (esta; sin firmar) |
 
 Ideas futuras (sin fecha): escanear todas las unidades a la vez; un mapa con las subcarpetas anidadas dentro de cada cuadro.

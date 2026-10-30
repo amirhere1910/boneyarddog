@@ -218,7 +218,7 @@ test('progreso: nunca marca 100 % antes de terminar, nunca pasa de 100 ni baja d
 
 // ------------------------------------------------------------------ resultado
 
-const carpeta = (resultado, extra = {}) => ({ origen: 'C:\\Datos\\A', solicitado: 'C:\\Datos\\A', destino: 'D:\\BoneYardDog\\x\\C\\Datos\\A', resultado, verificada: true, errores: [], ...extra });
+const carpeta = (resultado, extra = {}) => ({ origen: 'C:\\Datos\\A', solicitado: 'C:\\Datos\\A', destino: 'D:\\A', registroId: '0123456789abcdef', resultado, verificada: true, errores: [], ...extra });
 
 test('NUNCA hay titular «Listo» sin el resultado del motor', () => {
   for (const nada of [undefined, null, {}, { carpetas: 'x' }, 'listo']) assert.equal(W.resultHeadline(nada), null, JSON.stringify(nada));
@@ -270,8 +270,8 @@ test('original sin tocar: el motivo se dice en lenguaje llano', () => {
   assert.match(k(null), /se quedó donde estaba/);
 });
 
-test('botones del resultado: quitar la copia SOLO si ningún original se retiró', () => {
-  const lote = (carpetas, extra = {}) => ({ batchFolder: 'D:\\BoneYardDog\\2026-10-27_1405', estado: 'completo', carpetas, ...extra });
+test('botones del resultado: quitar la copia SOLO tras una copia completa, nunca tras cancelar ni si un original se retiró', () => {
+  const lote = (carpetas, extra = {}) => ({ estado: 'completo', carpetas, ...extra });
   const copia = W.resultButtons(lote([carpeta('copiada-verificada')]));
   assert.deepEqual(copia, { openCopy: true, verifyAgain: true, removeCopy: true, deleteAfterRecycleFail: false, needsRescan: false });
   for (const gone of ['original-enviado-a-papelera', 'original-borrado-definitivamente', 'borrado-parcial']) {
@@ -280,12 +280,16 @@ test('botones del resultado: quitar la copia SOLO si ningún original se retiró
     assert.equal(b.needsRescan, true);
     assert.equal(b.openCopy, true);
   }
-  // Una cancelada sin nada verificado: se puede quitar lo que quedó a medias, pero no hay nada que verificar.
-  const canc = W.resultButtons(lote([carpeta('cancelada', { verificada: false })], { estado: 'cancelado' }));
-  assert.equal(canc.removeCopy, true);
-  assert.equal(canc.verifyAgain, false);
-  // Sin carpeta de lote no hay nada que abrir.
-  assert.deepEqual(W.resultButtons({ carpetas: [carpeta('copiada-verificada')] }), { openCopy: false, verifyAgain: false, removeCopy: false, deleteAfterRecycleFail: false, needsRescan: false });
+  // Cancelada: la app ya limpió sola; NO se ofrece «Quitar la copia» (se vería como un error).
+  const canc = W.resultButtons(lote([carpeta('cancelada', { verificada: false, registroId: null, limpieza: { limpia: true, pendientes: [] } })], { estado: 'cancelado' }));
+  assert.deepEqual(canc, { openCopy: false, verifyAgain: false, removeCopy: false, deleteAfterRecycleFail: false, needsRescan: false });
+  // Una cancelada que no se pudo limpiar: se puede abrir la carpeta provisional que quedó, pero no «quitar».
+  const sucia = W.resultButtons(lote([carpeta('cancelada', { verificada: false, registroId: null, limpieza: { limpia: false, pendientes: ['E:\\Fotos.copiando'] } })], { estado: 'cancelado' }));
+  assert.equal(sucia.openCopy, true);
+  assert.equal(sucia.removeCopy, false);
+  assert.equal(W.revealTarget(lote([carpeta('cancelada', { verificada: false, limpieza: { limpia: false, pendientes: ['E:\\Fotos.copiando'] } })], { estado: 'cancelado' })), 'E:\\Fotos.copiando');
+  // Original sin tocar por una Papelera fallida: la copia sigue, pero «Quitar» solo se ofrece tras COPIAR.
+  assert.equal(W.resultButtons(lote([carpeta('original-sin-tocar', { motivoCodigo: 'papelera-fallo' })])).removeCopy, false);
   assert.deepEqual(W.resultButtons(undefined), { openCopy: false, verifyAgain: false, removeCopy: false, deleteAfterRecycleFail: false, needsRescan: false });
 });
 
@@ -343,4 +347,122 @@ test('verificar una copia: titular y problemas en llano (faltantes, alterados, s
   assert.equal(muchos.lines.length, 50);
   assert.equal(muchos.hidden, 30);
   assert.equal(W.verifyView(null), null);
+});
+
+// ------------------------------------------- el estado del asistente: nada sobrevive de una operación anterior
+
+test('abrir, cancelar, cerrar, abrir de nuevo y empezar otra operación: NO queda nada de la anterior (ni «Cancelando…»)', () => {
+  const items = [{ path: 'C:\\Datos\\Fotos', name: 'Fotos' }];
+  // Primera vez: se elige destino, se revisa, se empieza y se CANCELA a mitad.
+  let a = W.newWizard('transfer', 'move', items);
+  a = W.reduce(a, { type: 'set-destination', destination: { path: 'E:\\', fileSystem: 'exFAT' } });
+  a = W.reduce(a, { type: 'review', review: { planId: '0123456789abcdef', blockers: [], warnings: [{ code: 'papelera-no-cabe' }] } });
+  a = W.reduce(a, { type: 'recycle-choice', choice: 'borrar' });
+  a = W.reduce(a, { type: 'understood', value: true });
+  a = W.reduce(a, { type: 'start-operation' });
+  a = W.reduce(a, { type: 'progress', event: { fase: 'copiando', overallBytesDone: 500, totalBytes: 1000, overallFilesDone: 1, totalFiles: 3, archivo: 'C:\\Datos\\Fotos\\a.jpg', bytesPerSecond: 1e6, etaSeconds: 30 } });
+  a = W.reduce(a, { type: 'cancel' });
+  const viewCancelling = W.wizardView(a);
+  assert.equal(viewCancelling.notice, 'Cancelando… Los originales no se tocan.');
+  assert.equal(viewCancelling.cancelDisabled, true);
+  assert.equal(viewCancelling.progress.percent, 25);
+  a = W.reduce(a, { type: 'finished', result: { runId: 'aaaaaaaaaaaaaaaa', estado: 'cancelado', carpetas: [] } });
+  a = W.reduce(a, { type: 'error', text: 'un error viejo' });
+  a = W.reduce(a, { type: 'result-confirm', value: true });
+  assert.equal(a.result.estado, 'cancelado');
+
+  // Se cierra y se vuelve a abrir: estado NUEVO (idéntico a uno recién creado).
+  const b = W.newWizard('transfer', 'move', items);
+  assert.deepEqual(b, W.newWizard('transfer', 'move', items), 'abrir siempre parte de cero');
+  assert.equal(b.phase, 'idle');
+  assert.equal(b.progress, null);
+  assert.equal(b.result, null);
+  assert.equal(b.error, '');
+  assert.equal(b.recycleChoice, null, 'ninguna opción elegida');
+  assert.equal(b.understood, false, 'ninguna confirmación de borrado marcada');
+  assert.equal(b.destination, null);
+  assert.equal(b.resultConfirm, false);
+  const viewNew = W.wizardView(b);
+  assert.equal(viewNew.notice, 'Si cancelas, los originales no se tocan.');
+  assert.equal(viewNew.cancelDisabled, false);
+  assert.equal(viewNew.errorText, '');
+  assert.equal(viewNew.showResult, false);
+  assert.equal(viewNew.progress.percent, 0);
+  assert.equal(viewNew.progress.currentFile, '');
+
+  // Se empieza otra operación: nada de «Cancelando…», ni progreso, ni error, ni resultado de la anterior.
+  let c = W.reduce(b, { type: 'set-destination', destination: { path: 'E:\\', fileSystem: 'exFAT' } });
+  c = W.reduce(c, { type: 'start-operation' });
+  const viewC = W.wizardView(c);
+  assert.equal(viewC.notice, 'Si cancelas, los originales no se tocan.');
+  assert.doesNotMatch(JSON.stringify(viewC), /Cancelando/);
+  assert.equal(viewC.cancelDisabled, false);
+  assert.equal(viewC.cancelVisible, true);
+  assert.equal(viewC.progress.percent, 0);
+  assert.equal(c.progress, null);
+  assert.equal(c.error, '');
+  assert.equal(c.result, null);
+
+  // Aun dentro del MISMO diálogo, empezar de nuevo después de cancelar reinicia todo lo de la operación.
+  let d = W.reduce(W.newWizard('transfer', 'copy', items), { type: 'start-operation' });
+  d = W.reduce(d, { type: 'progress', event: { fase: 'copiando', overallBytesDone: 10, totalBytes: 100 } });
+  d = W.reduce(d, { type: 'cancel' });
+  d = W.reduce(d, { type: 'failed', error: 'algo falló' });
+  d = W.reduce(d, { type: 'start-operation' });
+  assert.equal(d.phase, 'running');
+  assert.equal(d.error, '');
+  assert.equal(d.progress, null);
+  assert.equal(W.wizardView(d).notice, 'Si cancelas, los originales no se tocan.');
+});
+
+test('el estado: cancelar solo vale mientras corre, un progreso tardío no resucita una operación terminada, y terminar limpia elecciones y confirmaciones', () => {
+  let s = W.newWizard('transfer', 'move', []);
+  assert.equal(W.reduce(s, { type: 'cancel' }).phase, 'idle', 'cancelar sin operación no hace nada');
+  assert.equal(W.reduce(s, { type: 'progress', event: { fase: 'copiando' } }).progress, null, 'un aviso de progreso fuera de una operación se ignora');
+  s = W.reduce(s, { type: 'recycle-choice', choice: 'borrar' });
+  s = W.reduce(s, { type: 'understood', value: true });
+  s = W.reduce(s, { type: 'start-operation' });
+  s = W.reduce(s, { type: 'finished', result: { runId: 'bbbbbbbbbbbbbbbb', carpetas: [] } });
+  assert.equal(s.recycleChoice, null);
+  assert.equal(s.understood, false);
+  assert.equal(W.reduce(s, { type: 'progress', event: { fase: 'copiando' } }).progress, null, 'ya terminó: el avance tardío no cuenta');
+  assert.equal(W.reduce(W.reduce(s, { type: 'recycle-choice', choice: 'dejar' }), { type: 'understood', value: 'true' }).understood, false, 'solo un true verdadero confirma');
+  // Elegir «dejar» quita una confirmación de borrado ya marcada.
+  const marcada = W.reduce(W.reduce(W.newWizard('transfer', 'move', []), { type: 'recycle-choice', choice: 'borrar' }), { type: 'understood', value: true });
+  assert.equal(W.reduce(marcada, { type: 'recycle-choice', choice: 'dejar' }).understood, false);
+  // Cambiar el destino invalida la revisión y las elecciones.
+  const conRev = W.reduce(W.reduce(marcada, { type: 'review', review: { planId: 'x' } }), { type: 'set-destination', destination: { path: 'F:\\' } });
+  assert.equal(conRev.review, null);
+  assert.equal(conRev.recycleChoice, null);
+  assert.equal(conRev.understood, false);
+});
+
+test('aviso de «tardando» a los 15 s sin avance de bytes, con la etapa y los segundos', () => {
+  let s = W.reduce(W.newWizard('transfer', 'copy', []), { type: 'start-operation' });
+  s = W.reduce(s, { type: 'progress', event: { fase: 'copiando', etapa: 'guardando en el disco', sinAvanceSegundos: 14, overallBytesDone: 0, totalBytes: 100 } });
+  assert.equal(W.wizardView(s).stalledNotice, '');
+  s = W.reduce(s, { type: 'progress', event: { fase: 'copiando', etapa: 'guardando en el disco', sinAvanceSegundos: 15, overallBytesDone: 0, totalBytes: 100 } });
+  assert.equal(W.wizardView(s).stalledNotice, 'El disco o el antivirus está tardando… (etapa: guardando en el disco, hace 15 s)');
+  s = W.reduce(s, { type: 'progress', event: { fase: 'copiando', etapa: 'copiando', sinAvanceSegundos: 0, overallBytesDone: 5, totalBytes: 100 } });
+  assert.equal(W.wizardView(s).stalledNotice, '', 'al volver a avanzar, el aviso desaparece');
+});
+
+test('progreso: textos separados «Copiado X de Y» / «Verificado X de Y» y etapa; la rápida no finge verificar', () => {
+  const W = require('../src/shared/transfer-wizard');
+  const GB = 1024 ** 3;
+  const v = W.progressView({ fase: 'verificando', copiadoBytes: 5.8 * GB, verificadoBytes: 1.4 * GB, totalVerificarBytes: 5.8 * GB, totalBytes: 5.8 * GB, etapa: 'verificando destino' }, 'full');
+  assert.match(v.copiedText, /^Copiado 5,8 GB de 5,8 GB$/);
+  assert.match(v.verifiedText, /^Verificado 1,4 GB de 5,8 GB$/);
+  assert.equal(v.stageText, 'Etapa: verificando destino');
+  const q = W.progressView({ fase: 'copiando', copiadoBytes: 10, totalVerificarBytes: 0, totalBytes: 100 }, 'quick');
+  assert.match(q.verifiedText, /rápida/);
+});
+
+test('resultado forzado por el perro guardián: titular con el aviso exacto, sin botones de copia', () => {
+  const W = require('../src/shared/transfer-wizard');
+  const r = { estado: 'cancelada', abortada: true, forzada: true, aviso: 'Cancelada a la fuerza porque el disco no respondía. Puede quedar la carpeta «E:\\x.copiando».', carpetas: [] };
+  const h = W.resultHeadline(r);
+  assert.equal(h.tone, 'error');
+  assert.match(h.text, /Cancelada a la fuerza/);
+  assert.match(h.text, /x\.copiando/);
 });

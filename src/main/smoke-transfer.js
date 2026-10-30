@@ -34,6 +34,7 @@ const { app, shell } = require('electron');
 const { createTransferEngine } = require('../core/transfer');
 const { volumeInfoForPath, getVolumeInfo } = require('./volume-info');
 const { isProtectedPath } = require('../core/protected');
+const { createRegistry } = require('../core/registro');
 
 const TIME_LIMIT_MS = 4 * 60 * 1000;
 const DAY = 24 * 60 * 60 * 1000;
@@ -103,7 +104,7 @@ function describeResult(r) {
   return {
     estado: r.estado,
     abortada: r.abortada,
-    lote: r.lote,
+    destinoRaiz: r.destinoRaiz,
     carpetas: r.carpetas.map((c) => ({ origen: c.origen, resultado: c.resultado, motivo: c.motivo, verificada: c.verificada, errores: c.errores.slice(0, 10) })),
   };
 }
@@ -127,8 +128,10 @@ async function main() {
     trashed.push(p);
     return shell.trashItem(p);
   };
+  const registry = createRegistry({ dir: path.join(work, 'registros-transferencia') });
   const mkEngine = (extra = {}) =>
     createTransferEngine({
+      registry,
       // En Windows se consulta el volumen real. En otros sistemas (solo para poder ensayar aquí) se simula un disco fijo.
       volumeInfo: IS_WIN ? (p) => volumeInfoForPath(p) : async () => ({ driveType: 'fixed', fileSystem: 'otro', sizeBytes: 250e9, freeBytes: 30e9 }),
       trash: realTrash,
@@ -185,9 +188,13 @@ async function main() {
       if (!entry.contenidoIgual) violation(`b/${verify}: la copia NO es igual al origen`);
       if (!entry.origenIntacto) violation(`b/${verify}: el origen cambió en una copia`);
       if (verify === 'quick' && !r.avisoVerificacion) violation('b/quick: falta el rótulo "no comprueba el contenido"');
-      const v = await e.verifyBatch(r.batchFolder, { mode: 'full' });
-      entry.verifyBatch = { ok: v.ok, problemas: v.problemas.length };
-      if (verify === 'full' && !v.ok) violation('b/full: verifyBatch detectó problemas en una copia recién hecha');
+      const rec = await registry.get(r.carpetas[0].registroId);
+      const v = rec ? await e.verifyRecord(rec, { mode: 'full' }) : { estado: 'sin-registro', problemas: [] };
+      entry.verifyRecord = { estado: v.estado, problemas: v.problemas.length };
+      if (verify === 'full' && v.estado !== 'ok') violation(`b/full: verifyRecord dio «${v.estado}» en una copia recién hecha`);
+      const extras = (fs.readdirSync(copy) || []).filter((n) => ['ESTADO.json', 'MANIFIESTO.json', 'LEEME.txt'].includes(n));
+      if (extras.length) violation(`b/${verify}: la copia lleva archivos extra: ${JSON.stringify(extras)}`);
+      if (path.dirname(copy) !== path.resolve(destBase)) violation(`b/${verify}: la copia no quedó directamente en el destino (${copy})`);
     }
     report.scenarios[`b_copia_${verify}`] = entry;
   }
@@ -282,7 +289,7 @@ async function main() {
       entry.avisos = pf.warnings.map((w) => [w.code, w.cantidad || null]);
       entry.avisoRutaLarga = pf.warnings.some((w) => w.code === 'ruta-larga');
       if (pf.plan) {
-        const longest = Math.max(...pf.plan.sources[0].entries.map((en) => path.join(destBase, 'BoneYardDog', pf.plan.batchName, ...pf.plan.sources[0].destParts, ...en.rel.split('/')).length));
+        const longest = Math.max(...pf.plan.sources[0].entries.map((en) => path.join(destBase, pf.plan.sources[0].workName, ...en.rel.split('/')).length));
         entry.rutaDestinoMasLarga = longest;
         const r = await e.run(pf.plan);
         entry.resultado = describeResult(r);
@@ -324,9 +331,11 @@ async function main() {
       entry.resultado = describeResult(r);
       entry.papeleraLlamada = trashed.length > trashedBefore;
       entry.originalIntacto = same(before, snapshot(s)); // si se cancela, el original no se toca
-      const estado = JSON.parse(fs.readFileSync(path.join(r.batchFolder, 'ESTADO.json'), 'utf8'));
-      entry.estadoJson = estado.estado;
-      if (r.estado !== 'cancelado' || estado.estado !== 'cancelado') violation(`f: la cancelación no quedó registrada (${r.estado}/${estado.estado})`);
+      // Cancelar deja el destino LIMPIO: ni carpeta final ni «….copiando».
+      entry.destinoTrasCancelar = fs.readdirSync(destBase).filter((n) => n.startsWith('Para cancelar'));
+      entry.limpieza = r.carpetas[0].limpieza || null;
+      if (r.estado !== 'cancelado') violation(`f: la cancelación no quedó registrada (${r.estado})`);
+      if (entry.destinoTrasCancelar.length) violation(`f: tras cancelar quedó algo en el destino: ${JSON.stringify(entry.destinoTrasCancelar)}`);
       if (entry.papeleraLlamada || !entry.originalIntacto) violation('f: tras cancelar, el original no quedó intacto');
     } else violation(`f: el preflight bloqueó: ${JSON.stringify(pf.blockers)}`);
     report.scenarios.f_cancelacion = entry;

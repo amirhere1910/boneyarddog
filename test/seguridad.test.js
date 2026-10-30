@@ -133,7 +133,7 @@ const EXPECTED_API = [
   'chooseFolder', 'startScan', 'cancelScan', 'getSettings', 'saveSettings', 'getStaleFolders', 'excludePath', 'includePath', 'listDrives', 'chooseDrive',
   'revealInExplorer', 'getTreemap', 'getDetails', 'summarizeSelection', 'onProgress',
   'chooseDestination', 'chooseDestinationDrive', 'listDestinationDrives', 'transferPreflight', 'transferRun', 'transferCancel',
-  'transferDeleteFromResult', 'transferRemoveCopy', 'verifyBatchChooseFolder', 'verifyBatchRun', 'onTransferProgress',
+  'transferDeleteFromResult', 'transferRemoveCopy', 'copiesList', 'copiesVerify', 'copiesRemove', 'pendingList', 'pendingClean', 'diagSave', 'onTransferProgress',
   'testDataStatus', 'testDataCreate', 'testDataCancel', 'testDataDelete', 'testDataUse', 'getAppInfo', 'onTestDataProgress',
 ].sort();
 
@@ -144,12 +144,12 @@ test('el preload expone SOLO las funciones previstas, y ninguna acepta una ruta 
   // Las funciones de copiar y transferir: sus parámetros son opciones, identificadores o una letra, nunca un destino.
   for (const m of body.matchAll(/^  (\w+): \(([^)]*)\) =>/gm)) {
     const [, name, params] = m;
-    if (!/^(choose(Destination|DestinationDrive)|listDestinationDrives|transfer\w+|verifyBatch\w+|testData\w+)$/.test(name)) continue;
+    if (!/^(choose(Destination|DestinationDrive)|listDestinationDrives|transfer\w+|copies\w+|pendingList|diagSave|testData\w+)$/.test(name)) continue;
     assert.doesNotMatch(params, /dest|destino|target|path|ruta|folder|carpeta|dir/i, `${name}(${params}) no puede recibir una ruta`);
   }
   assert.match(preload, /chooseDestination: \(\) =>/);
   assert.match(preload, /chooseDestinationDrive: \(letter\) =>/);
-  assert.match(preload, /verifyBatchChooseFolder: \(\) =>/);
+  assert.match(preload, /copiesVerify: \(id, options\) =>/);
   assert.match(preload, /transferPreflight: \(options\) =>/);
   assert.match(preload, /transferRun: \(planId\) =>/);
 });
@@ -169,10 +169,10 @@ test('el destino solo lo fija el principal (diálogo o unidad detectada) y nunca
   // Los orígenes los confirma el análisis uno por uno y se usa la ruta que él conoce.
   assert.match(main, /service\.getNode\(p\)/);
   assert.match(main, /sources\.push\(node\.path\)/);
-  // La carpeta de lote a verificar también sale del diálogo y debe tener MANIFIESTO.json.
-  assert.equal((main.match(/context\.batchFolder\s*=/g) || []).length, 1);
-  assert.match(main, /path\.join\(folder, 'MANIFIESTO\.json'\)/);
-  assert.match(main, /verifyBatch\(context\.batchFolder, /);
+  // «Copias anteriores»: el registro vive en el PC y la interfaz solo manda el id de una copia (16 hexadecimales), nunca una ruta.
+  assert.match(main, /handle\(V\.CHANNELS\.copiesVerify, async \(id, options, \.\.\.rest\) => \{\s*V\.validateNoArgs\(rest\);\s*V\.validateOpaqueId\(id\);/);
+  assert.match(main, /handle\(V\.CHANNELS\.copiesRemove, async \(id, \.\.\.rest\) => \{\s*V\.validateNoArgs\(rest\);\s*V\.validateOpaqueId\(id\);/);
+  assert.doesNotMatch(main, /batchFolder|MANIFIESTO/);
 });
 
 test('transferir: ejecutar solo recibe un planId validado; el borrado definitivo exige validar y confirmar', () => {
@@ -185,7 +185,7 @@ test('transferir: ejecutar solo recibe un planId validado; el borrado definitivo
 test('la Papelera real (shell.trashItem) está en un solo lugar del principal y se inyecta al servicio', () => {
   assert.equal((main.match(/shell\.trashItem\(/g) || []).length, 1);
   assert.match(main, /const trash = \(p\) => \(context\.smokeTrashFails \? Promise\.reject\(.*\) : shell\.trashItem\(p\)\);/);
-  assert.match(main, /: \{ trash \},\s*\);/, 'fuera de la prueba automática solo se inyecta la Papelera real');
+  assert.match(main, /: \{ trash, registryDir, diagFile \},\s*\);/, 'fuera de la prueba automática solo se inyecta la Papelera real, la carpeta del registro y el archivo de diagnóstico');
   assert.equal((main.match(/smokeTrashFails/g) || []).length, 2, 'el fallo simulado solo se declara y se usa en un lugar');
   assert.equal((main.match(/smokeRemovablePrefix/g) || []).length, 1);
   assert.match(main, /SMOKE\s*\?[^:]*\n?[\s\S]*?smokeRemovablePrefix/);
@@ -195,7 +195,7 @@ test('la Papelera real (shell.trashItem) está en un solo lugar del principal y 
 test('«Abrir en el Explorador» acepta rutas del motor además de las del análisis, sin abrir ni ejecutar nada', () => {
   assert.match(main, /context\.revealable\.has\(p\)/);
   assert.match(main, /function rememberRevealable\(result\)/);
-  assert.equal((main.match(/revealable\.add\(/g) || []).length, 3, 'lote verificado + lote ejecutado + copias');
+  assert.equal((main.match(/revealable\.add\(/g) || []).length, 1, 'solo las copias que el motor confirmó (verificadas)');
   assert.doesNotMatch(main, /shell\.openPath|shell\.openExternal/);
 });
 
@@ -213,4 +213,10 @@ test('datos de prueba: la ruta es fija (Documentos + nombre fijo) y la fija el p
   assert.equal((main.match(/removeRoot\(/g) || []).length, 1, 'un solo borrado de los datos de prueba');
   assert.match(main, /smokeDocuments: null/);
   assert.doesNotMatch(appJs, /BoneYardDog-Prueba|getPath/, 'la interfaz no conoce ni manda la ruta');
+});
+
+test('«limpiar copias incompletas»: la interfaz solo nombra una carpeta que BoneYardDog anotó en su diario; el hilo lo comprueba', () => {
+  assert.match(main, /handle\(V\.CHANNELS\.pendingClean, async \(ruta, \.\.\.rest\) => \{\s*V\.validateNoArgs\(rest\);\s*V\.validateAbsolutePath\(ruta\);/);
+  const worker = read('src', 'service', 'transfer-worker.js');
+  assert.match(worker, /async cleanPending\(ruta\) \{[\s\S]*?find\(\(p\) => p\.ruta === ruta\)[\s\S]*?if \(!entry\) throw new ServiceError\('BoneYardDog no anotó esa carpeta/);
 });
